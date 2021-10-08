@@ -2685,6 +2685,14 @@ public:
 		return Void();
 	}
 
+	ACTOR static Future<bool> isTenantEmpty(DatabaseBackupAgent* backupAgent,
+	                                      	Reference<ReadYourWritesTransaction> tr,
+	                                      	Database db,
+	                                      	Key prefix){
+		RangeResult rangeResult = wait(tr->getRange(prefixRange(prefix),1));
+		return rangeResult.empty();
+	}
+
 	ACTOR static Future<Void> atomicSwitchover(DatabaseBackupAgent* backupAgent,
 	                                           Database dest,
 	                                           Key tagName,
@@ -3225,6 +3233,10 @@ public:
 
 Future<Void> DatabaseBackupAgent::clearPrefix(Reference<ReadYourWritesTransaction> tr, Database db, Key removePrefix) {
 	return DatabaseBackupAgentImpl::clearPrefix(this, tr, db, removePrefix);
+}
+
+Future<bool> DatabaseBackupAgent::isTenantEmpty(Reference<ReadYourWritesTransaction> tr, Database db, Key prefix){
+	return DatabaseBackupAgentImpl::isTenantEmpty(this,tr,db,prefix);
 }
 
 Future<Void> DatabaseBackupAgent::unlockBackup(Reference<ReadYourWritesTransaction> tr, Key tagName) {

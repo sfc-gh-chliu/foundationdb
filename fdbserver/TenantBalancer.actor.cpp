@@ -26,7 +26,9 @@
 #include "fdbserver/ServerDBInfo.actor.h"
 #include "fdbserver/WorkerInterface.actor.h"
 #include "flow/Trace.h"
+#include "fdbclient/StatusClient.h"
 #include "flow/actorcompiler.h" // This must be the last #include.
+#include <vector>
 
 // TODO: do we need any recoverable error states?
 enum class MovementState { INITIALIZING, STARTED, READY_FOR_SWITCH, COMPLETED };
@@ -45,6 +47,7 @@ public:
 	Standalone<StringRef> getDestinationPrefix() const { return destinationPrefix; }
 	std::string getDatabaseName() const { return databaseName; }
 	Database getDestinationDatabase() const { return destinationDb; }
+	std::string getTagName() const { return tagName; }
 
 	void setDestinationDatabase(Database db) { destinationDb = db; }
 
@@ -80,6 +83,7 @@ private:
 
 	std::string databaseName;
 	Database destinationDb;
+	std::string tagName;
 };
 
 class DestinationMovementRecord {
@@ -357,10 +361,38 @@ private:
 	std::map<Key, DestinationMovementRecord> incomingMovements;
 };
 
+// src
 ACTOR Future<Void> moveTenantToCluster(TenantBalancer* self, MoveTenantToClusterRequest req) {
 	wait(delay(0)); // TODO: this is temporary; to be removed when we add code
-
 	try {
+		// 1.Extract necessary data from metadata
+		self->addExternalDatabase(req.destConnectionString, req.destConnectionString);
+		state Database destDatabase = self->getExternalDatabase(req.destConnectionString).get();
+		state SourceMovementRecord sourceMovementRecord(
+		    req.sourcePrefix, req.destPrefix, req.destConnectionString, destDatabase);
+		Standalone<VectorRef<KeyRangeRef>> backupRanges;
+		backupRanges.add(prefixRange(req.sourcePrefix));
+
+		// 2.Use DR to do datamovement
+		wait(self->agent.submitBackup(self->getExternalDatabase(req.destConnectionString).get(),
+		                              KeyRef(sourceMovementRecord.getTagName()),
+		                              backupRanges,
+		                              StopWhenDone::False,
+		                              req.destPrefix,
+		                              req.sourcePrefix,
+		                              LockDB::False));
+		// Check if a backup agent is running
+		bool agentRunning = wait(self->agent.checkActive(destDatabase));
+		if (!agentRunning) {
+			printf("The data movement on%s was successfully submitted but no DR agents are responding.\n",
+			       self->db->getConnectionRecord()->getConnectionString().toString().c_str());
+			// Throw an error that will not display any additional information
+			throw actor_cancelled();
+		}
+
+		// 3.Do record
+		self->saveOutgoingMovement(sourceMovementRecord);
+
 		MoveTenantToClusterReply reply;
 		req.reply.send(reply);
 	} catch (Error& e) {
@@ -370,10 +402,25 @@ ACTOR Future<Void> moveTenantToCluster(TenantBalancer* self, MoveTenantToCluster
 	return Void();
 }
 
+// dest
 ACTOR Future<Void> receiveTenantFromCluster(TenantBalancer* self, ReceiveTenantFromClusterRequest req) {
 	wait(delay(0)); // TODO: this is temporary; to be removed when we add code
-
 	try {
+		Key targetPrefix = req.destPrefix;
+
+		// 1.Lock the destination before we start the movement
+		// TODO
+
+		// 2.Check if prefix is empty.
+		bool isPrefixEmpty = wait(self->agent.isTenantEmpty(self->db, targetPrefix));
+		if (!isPrefixEmpty) {
+			throw movement_dest_prefix_no_empty();
+		}
+
+		// 3.Do record
+		DestinationMovementRecord destinationMovementRecord(req.sourcePrefix, req.destPrefix);
+		self->saveIncomingMovement(destinationMovementRecord);
+
 		ReceiveTenantFromClusterReply reply;
 		req.reply.send(reply);
 	} catch (Error& e) {
@@ -383,11 +430,56 @@ ACTOR Future<Void> receiveTenantFromCluster(TenantBalancer* self, ReceiveTenantF
 	return Void();
 }
 
+ACTOR Future<std::vector<TenantMovementInfo>> fetchDBMove(Database db, bool isSrc) {
+	state std::vector<TenantMovementInfo> recorder;
+	try {
+		// TODO distinguish dr and data movement
+		// TODO switch to another cheaper way
+		// get running data movement
+		state StatusObject statusObjCluster = wait(StatusClient::statusFetcher(db));
+		StatusObjectReader reader(statusObjCluster);
+		std::string context = isSrc ? "dr_backup" : "dr_backup_dest";
+		std::string path = format("layers.%s.tags", context.c_str());
+		StatusObjectReader tags;
+		if (reader.tryGet(path, tags)) {
+			for (auto itr : tags.obj()) {
+				JSONDoc tag(itr.second);
+				bool running = false;
+				tag.tryGet("running_backup", running);
+				if (running) {
+					std::string backup_state, seconds_behind;
+					tag.tryGet("backup_state", backup_state);
+					tag.tryGet("seconds_behind", seconds_behind);
+					TenantMovementInfo tenantMovementInfo;
+					tenantMovementInfo.movementLocation =
+					    isSrc ? TenantMovementInfo::Location::SOURCE : TenantMovementInfo::Location::DEST;
+					tenantMovementInfo.TenantMovementStatus = backup_state;
+					tenantMovementInfo.seconds_behind = seconds_behind;
+					recorder.push_back(tenantMovementInfo);
+				}
+			}
+		}
+	} catch (Error& e) {
+		if (e.code() == error_code_actor_cancelled)
+			throw;
+		fprintf(stderr, "ERROR: %s\n", e.what());
+		throw;
+	}
+
+	return recorder;
+}
+
 ACTOR Future<Void> getActiveMovements(TenantBalancer* self, GetActiveMovementsRequest req) {
 	wait(delay(0)); // TODO: this is temporary; to be removed when we add code
 
 	try {
+		// Get all active movement from status json, and transfer them into TenantMovementInfo in reply
+		// TODO acquire the srcPrefix and destPrefix from somewhere
+		state std::vector<TenantMovementInfo> statusAsSrc = wait(fetchDBMove(self->db, true));
+		state std::vector<TenantMovementInfo> statusAsDest = wait(fetchDBMove(self->db, false));
 		GetActiveMovementsReply reply;
+		reply.activeMovements.insert(reply.activeMovements.end(), statusAsSrc.begin(), statusAsSrc.end());
+		reply.activeMovements.insert(reply.activeMovements.end(), statusAsDest.begin(), statusAsDest.end());
 		req.reply.send(reply);
 	} catch (Error& e) {
 		req.reply.sendError(e);
@@ -439,6 +531,16 @@ ACTOR Future<Void> cleanupMovementSource(TenantBalancer* self, CleanupMovementSo
 	wait(delay(0)); // TODO: this is temporary; to be removed when we add code
 
 	try {
+		// TODO once the range has been unlocked, it will no longer be legal to run cleanup
+		CleanupMovementSourceRequest::CleanupType cleanupType = req.cleanupType;
+		state std::string tenantName = req.tenantName;
+		if (cleanupType != CleanupMovementSourceRequest::CleanupType::UNLOCK) {
+			// clear specific tenant
+			wait(self->agent.clearPrefix(self->db, Key(tenantName)));
+		}
+		if (cleanupType != CleanupMovementSourceRequest::CleanupType::ERASE) {
+			wait(self->agent.unlockBackup(self->db, Key(tenantName)));
+		}
 		CleanupMovementSourceReply reply;
 		req.reply.send(reply);
 	} catch (Error& e) {

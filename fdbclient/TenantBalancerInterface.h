@@ -119,12 +119,13 @@ struct MoveTenantToClusterRequest {
 	KeyRef destPrefix;
 
 	// TODO: dest cluster info
+	std::string destConnectionString;
 
 	ReplyPromise<MoveTenantToClusterReply> reply;
 
 	MoveTenantToClusterRequest() {}
-	MoveTenantToClusterRequest(KeyRef sourcePrefix, KeyRef destPrefix)
-	  : sourcePrefix(arena, sourcePrefix), destPrefix(arena, destPrefix) {}
+	MoveTenantToClusterRequest(KeyRef sourcePrefix, KeyRef destPrefix, std::string destConnectionString)
+	  : sourcePrefix(arena, sourcePrefix), destPrefix(arena, destPrefix),destConnectionString(destConnectionString) {}
 
 	template <class Ar>
 	void serialize(Ar& ar) {
@@ -183,9 +184,19 @@ struct TenantMovementInfo {
 	// DR info?
 	// movement status
 
+	// TODO: how to track destClusterFile?
+	std::string destConnectionString;
+	std::string TenantMovementStatus;
+	std::string seconds_behind;
+
 	template <class Ar>
 	void serialize(Ar& ar) {
 		serializer(ar, sourcePrefix, destPrefix, movementLocation);
+	}
+
+	std::string toString(bool isJson = false) const {
+		// TODO generate corresponding str
+		return "";
 	}
 };
 

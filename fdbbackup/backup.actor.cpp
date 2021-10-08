@@ -22,6 +22,7 @@
 #include "fdbclient/JsonBuilder.h"
 #include "flow/Arena.h"
 #include "flow/Error.h"
+#include "flow/ITrace.h"
 #include "flow/Trace.h"
 #define BOOST_DATE_TIME_NO_LIB
 #include <boost/interprocess/managed_shared_memory.hpp>
@@ -44,7 +45,6 @@
 #include "fdbclient/S3BlobStore.h"
 #include "fdbclient/json_spirit/json_spirit_writer_template.h"
 #include "fdbclient/DatabaseContext.h"
-#include "fdbclient/StatusClient.h"
 
 #include "flow/Platform.h"
 
@@ -2162,32 +2162,22 @@ ACTOR Future<Void> runAgent(Database db) {
 	return Void();
 }
 
-ACTOR Future<Void> submitDBMove(Database src,
-                                Database dest,
-                                Standalone<VectorRef<KeyRangeRef>> backupRanges,
-                                std::string tagName,
-                                Key addPrefix,
-                                Key removePrefix) {
+ACTOR Future<Void> submitDBMove(Database src, Database dest, Key destPrefix, Key srcPrefix) {
 	try {
-		state DatabaseBackupAgent backupAgent(src);
-		wait(backupAgent.submitBackup(
-		    dest, KeyRef(tagName), backupRanges, StopWhenDone::False, addPrefix, removePrefix, LockDB::False));
+		// TODO: transaction guarantee
+		state ReceiveTenantFromClusterRequest destRequest(srcPrefix, destPrefix);
+		state ErrorOr<ReceiveTenantFromClusterReply> receiveTenantFromClusterReply =
+		    wait(dest->getTenantBalancer().get().receiveTenantFromCluster.tryGetReply(destRequest));
 
-		// Check if a backup agent is running
-		bool agentRunning = wait(backupAgent.checkActive(dest));
-
-		if (!agentRunning) {
-			printf("The data movement on tag `%s' was successfully submitted but no DR agents are responding.\n",
-			       printable(StringRef(tagName)).c_str());
-
-			// Throw an error that will not display any additional information
-			throw actor_cancelled();
+		state MoveTenantToClusterRequest srcRequest(
+		    srcPrefix, destPrefix, dest->getConnectionRecord()->getConnectionString().toString());
+		state ErrorOr<MoveTenantToClusterReply> moveTenantToClusterReply =
+		    wait(src->getTenantBalancer().get().moveTenantToCluster.tryGetReply(srcRequest));
+		if (moveTenantToClusterReply.isError()) {
+			throw moveTenantToClusterReply.getError();
 		}
-		printf("The data movement on tag `%s' was successfully submitted.\n", printable(StringRef(tagName)).c_str());
-	}
-
-	// TODO: think about 1. do we need these tags here? 2. If so, we might need data movement specified tag
-	catch (Error& e) {
+		printf("The data movement was successfully submitted.\n");
+	} catch (Error& e) {
 		if (e.code() == error_code_actor_cancelled)
 			throw;
 		switch (e.code()) {
@@ -2195,9 +2185,7 @@ ACTOR Future<Void> submitDBMove(Database src,
 			fprintf(stderr, "ERROR: An error was encountered during submission\n");
 			break;
 		case error_code_backup_duplicate:
-			fprintf(stderr,
-			        "ERROR: A data movement is already running on tag `%s'\n",
-			        printable(StringRef(tagName)).c_str());
+			fprintf(stderr, "ERROR: A data movement is already running\n");
 			break;
 		default:
 			fprintf(stderr, "ERROR: %s\n", e.what());
@@ -2210,24 +2198,27 @@ ACTOR Future<Void> submitDBMove(Database src,
 	return Void();
 }
 
-ACTOR Future<Void> statusDBMove(Database src,
-                                Database dest,
-                                std::string tagName,
-                                int errorLimit,
-                                KeyRef destPrefix,
-                                KeyRef srcPrefix,
-                                bool json = false) {
+ACTOR Future<Void> statusDBMove(Database src, Database dest, KeyRef srcPrefix, bool json = false) {
 	try {
-		state DatabaseBackupAgent backupAgent(src);
-		state DatabaseBackupStatus backUpStatus = wait(backupAgent.getStatusData(dest, errorLimit, StringRef(tagName)));
+		// Send GetActiveMovementsRequest to source cluster
+		GetActiveMovementsRequest getActiveMovementsRequest;
+		state ErrorOr<GetActiveMovementsReply> getActiveMovementsReply =
+		    wait(src->getTenantBalancer().get().getActiveMovements.tryGetReply(getActiveMovementsRequest));
 
-		backUpStatus.srcClusterFile = src->getConnectionRecord()->getLocation().toString();
-		backUpStatus.destClusterFile = dest->getConnectionRecord()->getLocation().toString();
-		backUpStatus.srcPrefix = srcPrefix.size() ? srcPrefix : KeyRef("`not specified`");
-		backUpStatus.destPrefix = destPrefix.size() ? destPrefix : KeyRef("`not specified`");
-
-		std::string statusText = json ? backUpStatus.toJson() : backUpStatus.toString();
-		printf("%s\n", statusText.c_str());
+		// Filter for desired movement
+		std::vector<TenantMovementInfo> activeMovements = getActiveMovementsReply.get().activeMovements;
+		bool findMovement = false;
+		for (const auto& movement : activeMovements) {
+			if (movement.destConnectionString == dest->getConnectionRecord()->getConnectionString().toString()) {
+				findMovement = true;
+				std::string statusText = movement.toString(json);
+				printf("%s\n", statusText.c_str());
+				break;
+			}
+		}
+		if (!findMovement) {
+			throw movement_no_such_status();
+		}
 	} catch (Error& e) {
 		if (e.code() == error_code_actor_cancelled)
 			throw;
@@ -2238,25 +2229,27 @@ ACTOR Future<Void> statusDBMove(Database src,
 	return Void();
 }
 
-ACTOR Future<Void> finishDBMove(Database src,
-                                Database dest,
-                                Standalone<VectorRef<KeyRangeRef>> backupRanges,
-                                std::string tagName,
-                                ForceAction forceAction) {
+ACTOR Future<Void> finishDBMove(Database src, Database dest, Key srcPrefix, double maxLag = 10) {
+	// TODO find way to get max lag parameter
+	// TODO update when it's available to talk to dest
 	try {
-		state DatabaseBackupAgent backupAgent(src);
+		FinishSourceMovementRequest finishSourceMovementRequest(srcPrefix.toString());
+		state ErrorOr<FinishSourceMovementReply> finishSourceMovementReply =
+		    wait(src->getTenantBalancer().get().finishSourceMovement.tryGetReply(finishSourceMovementRequest));
 
-		// Backup everything, if no ranges were specified
-		if (backupRanges.size() == 0) {
-			backupRanges.push_back_deep(backupRanges.arena(), normalKeys);
-		}
+		state FinishDestinationMovementRequest finishDestinationMovementRequest(
+		    finishSourceMovementReply.get().tenantName, finishSourceMovementReply.get().version);
+		wait(dest->getTenantBalancer().get().finishDestinationMovement.tryGetReply(finishDestinationMovementRequest));
 
-		wait(backupAgent.atomicSwitchover(
-		    dest, KeyRef(tagName), backupRanges, StringRef(), StringRef(), forceAction, false));
-		printf("The data movement on tag `%s' was successfully switched.\n", printable(StringRef(tagName)).c_str());
-	}
-
-	catch (Error& e) {
+		// state DatabaseBackupAgent backupAgent(src);
+		// // Backup everything, if no ranges were specified
+		// if (backupRanges.size() == 0) {
+		// 	backupRanges.push_back_deep(backupRanges.arena(), normalKeys);
+		// }
+		// wait(backupAgent.atomicSwitchover(
+		//     dest, KeyRef(tagName), backupRanges, StringRef(), StringRef(), forceAction, false));
+		printf("The data movement was successfully finished.\n");
+	} catch (Error& e) {
 		if (e.code() == error_code_actor_cancelled)
 			throw;
 		switch (e.code()) {
@@ -2264,9 +2257,7 @@ ACTOR Future<Void> finishDBMove(Database src,
 			fprintf(stderr, "ERROR: An error was encountered during submission\n");
 			break;
 		case error_code_backup_duplicate:
-			fprintf(stderr,
-			        "ERROR: A data movement is already running on tag `%s'\n",
-			        printable(StringRef(tagName)).c_str());
+			fprintf(stderr, "ERROR: A data movement is already running'\n");
 			break;
 		default:
 			fprintf(stderr, "ERROR: %s\n", e.what());
@@ -2279,18 +2270,21 @@ ACTOR Future<Void> finishDBMove(Database src,
 	return Void();
 }
 
-ACTOR Future<Void> abortDBMove(Database src,
-                               Database dest,
-                               std::string tagName,
-                               PartialBackup partial,
-                               DstOnly dstOnly) {
+ACTOR Future<Void> abortDBMove(Database src, Database dest, std::string srcPrefix) {
 	try {
-		state DatabaseBackupAgent backupAgent(src);
+		// TODO movement Id -> srcPrefix, can we use mutation_stream_id instean?
+		AbortMovementRequest srcAbortMovementRequest(srcPrefix);
+		wait(src->getTenantBalancer().get().abortMovement.tryGetReply(srcAbortMovementRequest));
 
-		wait(backupAgent.abortBackup(dest, Key(tagName), partial, AbortOldBackup::False, dstOnly));
-		wait(backupAgent.unlockBackup(dest, Key(tagName)));
+		AbortMovementRequest destAbortMovementRequest(srcPrefix);
+		wait(dest->getTenantBalancer().get().abortMovement.tryGetReply(destAbortMovementRequest));
 
-		printf("The data movement on tag `%s' was successfully aborted.\n", printable(StringRef(tagName)).c_str());
+		// state DatabaseBackupAgent backupAgent(src);
+
+		// wait(backupAgent.abortBackup(dest, Key(tagName), partial, AbortOldBackup::False, dstOnly));
+		// wait(backupAgent.unlockBackup(dest, Key(tagName)));
+
+		printf("The data movement was successfully aborted.\n");
 	} catch (Error& e) {
 		if (e.code() == error_code_actor_cancelled)
 			throw;
@@ -2299,8 +2293,7 @@ ACTOR Future<Void> abortDBMove(Database src,
 			fprintf(stderr, "ERROR: An error was encountered during submission\n");
 			break;
 		case error_code_backup_unneeded:
-			fprintf(
-			    stderr, "ERROR: A data movement was not running on tag `%s'\n", printable(StringRef(tagName)).c_str());
+			fprintf(stderr, "ERROR: A data movement was not running\n");
 			break;
 		default:
 			fprintf(stderr, "ERROR: %s\n", e.what());
@@ -2312,9 +2305,10 @@ ACTOR Future<Void> abortDBMove(Database src,
 	return Void();
 }
 
-ACTOR Future<Void> cleanupDBMove(Database db, DeleteData deleteData) {
+ACTOR Future<Void> cleanupDBMove(Database src, Key srcPrefix, CleanupMovementSourceRequest::CleanupType cleanupType) {
 	try {
-		wait(cleanupBackup(db, deleteData));
+		state CleanupMovementSourceRequest cleanupMovementSourceRequest(srcPrefix.toString(), cleanupType);
+		wait(src->getTenantBalancer().get().cleanupMovementSource.tryGetReply(cleanupMovementSourceRequest));
 	} catch (Error& e) {
 		if (e.code() == error_code_actor_cancelled)
 			throw;
@@ -2328,8 +2322,9 @@ ACTOR Future<Void> cleanupDBMove(Database db, DeleteData deleteData) {
 // TODO change error code for all the operations about dbmove
 ACTOR Future<Void> clearSrcDBMove(Database src, KeyRef srcPrefix) {
 	try {
-		state DatabaseBackupAgent backupAgent(src);
-		wait(backupAgent.clearPrefix(src, srcPrefix));
+		state CleanupMovementSourceRequest cleanupMovementSourceRequest(
+		    srcPrefix.toString(), CleanupMovementSourceRequest::CleanupType::ERASE);
+		wait(src->getTenantBalancer().get().cleanupMovementSource.tryGetReply(cleanupMovementSourceRequest));
 	} catch (Error& e) {
 		if (e.code() == error_code_actor_cancelled)
 			throw;
@@ -2340,49 +2335,28 @@ ACTOR Future<Void> clearSrcDBMove(Database src, KeyRef srcPrefix) {
 	return Void();
 }
 
-ACTOR Future<std::unordered_map<std::string, std::string>> fetchDBMove(Database db, bool isSrc) {
-	state std::unordered_map<std::string, std::string> recorder;
-	try {
-		// TODO distinguish dr and data movement
-		// get running data movement
-		// todo make sure is this the right way to get status json?
-		state StatusObject statusObjCluster = wait(StatusClient::statusFetcher(db));
-		StatusObjectReader reader(statusObjCluster);
-		std::string context = isSrc ? "dr_backup" : "dr_backup_dest";
-		std::string path = format("layers.%s.tags", context.c_str());
-		StatusObjectReader tags;
-		if (reader.tryGet(path, tags)) {
-			for (auto itr : tags.obj()) {
-				JSONDoc tag(itr.second);
-				bool running = false;
-				tag.tryGet("running_backup", running);
-				if (running) {
-					std::string uid;
-					tag.tryGet("mutation_stream_id", uid);
-					recorder[itr.first] = uid;
-				}
-			}
-		}
-	} catch (Error& e) {
-		if (e.code() == error_code_actor_cancelled)
-			throw;
-		fprintf(stderr, "ERROR: %s\n", e.what());
-		throw;
-	}
-
-	return recorder;
-}
-
 // list movement from src, or to dest, depending on isSrc
 ACTOR Future<Void> listDBMove(Database db, bool isSrc) {
 	try {
-		state std::unordered_map<std::string, std::string> recorder = wait(fetchDBMove(db, isSrc));
+		// Send GetActiveMovementsRequest to source cluster
+		GetActiveMovementsRequest getActiveMovementsRequest;
+		state ErrorOr<GetActiveMovementsReply> getActiveMovementsReply =
+		    wait(db->getTenantBalancer().get().getActiveMovements.tryGetReply(getActiveMovementsRequest));
+
+		// Filter for desired movement
+		std::vector<TenantMovementInfo> targetMovements;
+		for (const auto& movement : getActiveMovementsReply.get().activeMovements) {
+			if ((movement.movementLocation == TenantMovementInfo::Location::SOURCE) == isSrc) {
+				targetMovements.push_back(movement);
+			}
+		}
+
 		printf("%s %s %s\n",
 		       "List running data movement",
 		       (isSrc ? "from" : "to"),
-		       db->getConnectionRecord()->getLocation().toString().c_str());
-		for (const auto& entry : recorder) {
-			printf("tag: %s  uid: %s\n", entry.first.c_str(), entry.second.c_str());
+		       db->getConnectionRecord()->getConnectionString().toString().c_str());
+		for (const auto& movement : targetMovements) {
+			printf(movement.toString(false).c_str());
 		}
 	} catch (Error& e) {
 		if (e.code() == error_code_actor_cancelled)
@@ -2398,17 +2372,16 @@ ACTOR Future<Void> listDBMove(Database src, Database dest) {
 	try {
 		printf("%s from %s to %s\n",
 		       "List running data movement",
-		       src->getConnectionRecord()->getLocation().toString().c_str(),
-		       dest->getConnectionRecord()->getLocation().toString().c_str());
-		state std::unordered_map<std::string, std::string> srcRecorder = wait(fetchDBMove(src, true));
-		state std::unordered_map<std::string, std::string> destRecorder = wait(fetchDBMove(dest, false));
-		std::unordered_set<std::string> visited;
-		for (const auto& [_, uid] : srcRecorder) {
-			visited.insert(uid);
-		}
-		for (const auto& entry : destRecorder) {
-			if (visited.count(entry.second)) {
-				printf("tag: %s  uid: %s\n", entry.first.c_str(), entry.second.c_str());
+		       src->getConnectionRecord()->getConnectionString().toString().c_str(),
+		       dest->getConnectionRecord()->getConnectionString().toString().c_str());
+		// Send GetActiveMovementsRequest to clusters
+		GetActiveMovementsRequest srcActiveMovementsRequest;
+		state ErrorOr<GetActiveMovementsReply> srcActiveMovementsReply =
+		    wait(src->getTenantBalancer().get().getActiveMovements.tryGetReply(srcActiveMovementsRequest));
+
+		for (const auto& movement : srcActiveMovementsReply.get().activeMovements) {
+			if (movement.destConnectionString == dest->getConnectionRecord()->getConnectionString().toString()) {
+				printf(movement.toString(false).c_str());
 			}
 		}
 	} catch (Error& e) {
@@ -4841,32 +4814,32 @@ int main(int argc, char* argv[]) {
 				if (!initCluster() || !initSourceCluster(true)) {
 					return FDB_EXIT_ERROR;
 				}
-				f = stopAfter(submitDBMove(sourceDb, db, backupKeys, tagName, Key(addPrefix), Key(removePrefix)));
+				f = stopAfter(submitDBMove(sourceDb, db, Key(addPrefix), Key(removePrefix)));
 				break;
 			case DBMoveType::STATUS:
 				if (!initCluster() || !initSourceCluster(true)) {
 					return FDB_EXIT_ERROR;
 				}
-				f = stopAfter(statusDBMove(
-				    sourceDb, db, tagName, maxErrors, KeyRef(addPrefix), KeyRef(removePrefix), jsonOutput));
+				f = stopAfter(statusDBMove(sourceDb, db, KeyRef(removePrefix), jsonOutput));
 				break;
 			case DBMoveType::FINISH:
 				if (!initCluster() || !initSourceCluster(true)) {
 					return FDB_EXIT_ERROR;
 				}
-				f = stopAfter(finishDBMove(sourceDb, db, backupKeys, tagName, forceAction));
+				f = stopAfter(finishDBMove(sourceDb, db, Key(removePrefix)));
 				break;
 			case DBMoveType::ABORT:
 				if (!initCluster() || !initSourceCluster(true)) {
 					return FDB_EXIT_ERROR;
 				}
-				f = stopAfter(abortDBMove(sourceDb, db, tagName, partial, dstOnly));
+				f = stopAfter(abortDBMove(sourceDb, db, removePrefix));
 				break;
 			case DBMoveType::CLEAN:
 				if (!initCluster()) {
 					return FDB_EXIT_ERROR;
 				}
-				f = stopAfter(cleanupDBMove(db, deleteData));
+				f = stopAfter(cleanupDBMove(
+				    sourceDb, Key(removePrefix), CleanupMovementSourceRequest::CleanupType::ERASE_AND_UNLOCK));
 				break;
 			case DBMoveType::CLEAR_SRC:
 				if (!initSourceCluster(true)) {
