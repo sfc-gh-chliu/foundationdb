@@ -239,6 +239,7 @@ ERROR( movement_not_found, 3290, "No record exists for moving the specified rang
 ERROR( movement_in_progress, 3291, "The specified range is already being moved")
 ERROR( movement_dest_prefix_no_empty, 3292, "The prefix in destination database is not empty")
 ERROR( movement_no_such_status, 3293, "No such running movement status")
+ERROR( movement_argument_error, 3294, "Arguments are not enough or error")
 
 ERROR( key_not_found, 2400, "Expected key is missing")
 ERROR( json_malformed, 2401, "JSON string was malformed")

@@ -28,6 +28,8 @@
 #include "flow/Trace.h"
 #include "fdbclient/StatusClient.h"
 #include "flow/actorcompiler.h" // This must be the last #include.
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 // TODO: do we need any recoverable error states?
@@ -47,7 +49,7 @@ public:
 	Standalone<StringRef> getDestinationPrefix() const { return destinationPrefix; }
 	std::string getDatabaseName() const { return databaseName; }
 	Database getDestinationDatabase() const { return destinationDb; }
-	std::string getTagName() const { return tagName; }
+	std::string getDestDBName() const { return databaseName; }
 
 	void setDestinationDatabase(Database db) { destinationDb = db; }
 
@@ -83,7 +85,6 @@ private:
 
 	std::string databaseName;
 	Database destinationDb;
-	std::string tagName;
 };
 
 class DestinationMovementRecord {
@@ -190,6 +191,7 @@ struct TenantBalancer {
 	Future<Void> saveOutgoingMovement(SourceMovementRecord const& record) {
 		return map(persistMovementRecord(this, record), [this, record](Void _) {
 			outgoingMovements[record.getSourcePrefix()] = record;
+			destDBNameToSrcPrefix[record.getDestDBName()] = record.getSourcePrefix();
 			return Void();
 		});
 	}
@@ -354,16 +356,24 @@ struct TenantBalancer {
 
 	Future<Void> recover() { return recoverImpl(this); }
 
+	Optional<Key> getSrcPrefix(std::string destDBName) const {
+		auto itr = destDBNameToSrcPrefix.find(destDBName);
+		if (itr == destDBNameToSrcPrefix.end()) {
+			return Optional<Key>();
+		}
+		return itr->second;
+	}
+
 private:
 	// TODO: ref count external databases and delete when all references are gone
 	std::unordered_map<std::string, Database> externalDatabases;
 	std::map<Key, SourceMovementRecord> outgoingMovements;
 	std::map<Key, DestinationMovementRecord> incomingMovements;
+	std::map<std::string, Key> destDBNameToSrcPrefix;
 };
 
 // src
 ACTOR Future<Void> moveTenantToCluster(TenantBalancer* self, MoveTenantToClusterRequest req) {
-	wait(delay(0)); // TODO: this is temporary; to be removed when we add code
 	try {
 		// 1.Extract necessary data from metadata
 		self->addExternalDatabase(req.destConnectionString, req.destConnectionString);
@@ -375,7 +385,7 @@ ACTOR Future<Void> moveTenantToCluster(TenantBalancer* self, MoveTenantToCluster
 
 		// 2.Use DR to do datamovement
 		wait(self->agent.submitBackup(self->getExternalDatabase(req.destConnectionString).get(),
-		                              KeyRef(sourceMovementRecord.getTagName()),
+		                              KeyRef(sourceMovementRecord.getDestDBName()),
 		                              backupRanges,
 		                              StopWhenDone::False,
 		                              req.destPrefix,
@@ -404,7 +414,6 @@ ACTOR Future<Void> moveTenantToCluster(TenantBalancer* self, MoveTenantToCluster
 
 // dest
 ACTOR Future<Void> receiveTenantFromCluster(TenantBalancer* self, ReceiveTenantFromClusterRequest req) {
-	wait(delay(0)); // TODO: this is temporary; to be removed when we add code
 	try {
 		Key targetPrefix = req.destPrefix;
 
@@ -430,13 +439,13 @@ ACTOR Future<Void> receiveTenantFromCluster(TenantBalancer* self, ReceiveTenantF
 	return Void();
 }
 
-ACTOR Future<std::vector<TenantMovementInfo>> fetchDBMove(Database db, bool isSrc) {
+ACTOR Future<std::vector<TenantMovementInfo>> fetchDBMove(TenantBalancer* self, bool isSrc) {
 	state std::vector<TenantMovementInfo> recorder;
+	std::unordered_map<std::string, std::string> destDBNameToSrcPrefix;
 	try {
 		// TODO distinguish dr and data movement
 		// TODO switch to another cheaper way
-		// get running data movement
-		state StatusObject statusObjCluster = wait(StatusClient::statusFetcher(db));
+		state StatusObject statusObjCluster = wait(StatusClient::statusFetcher(self->db));
 		StatusObjectReader reader(statusObjCluster);
 		std::string context = isSrc ? "dr_backup" : "dr_backup_dest";
 		std::string path = format("layers.%s.tags", context.c_str());
@@ -455,6 +464,15 @@ ACTOR Future<std::vector<TenantMovementInfo>> fetchDBMove(Database db, bool isSr
 					    isSrc ? TenantMovementInfo::Location::SOURCE : TenantMovementInfo::Location::DEST;
 					tenantMovementInfo.TenantMovementStatus = backup_state;
 					tenantMovementInfo.seconds_behind = seconds_behind;
+
+					Key sourcePrefix = self->getSrcPrefix(itr.first).get();
+					SourceMovementRecord sourceMovementRecord = self->getOutgoingMovement(sourcePrefix);
+					tenantMovementInfo.sourcePrefix = sourcePrefix;
+					tenantMovementInfo.destPrefix = sourceMovementRecord.getDestinationPrefix();
+					tenantMovementInfo.destConnectionString = sourceMovementRecord.getDestinationDatabase()
+					                                              ->getConnectionRecord()
+					                                              ->getConnectionString()
+					                                              .toString();
 					recorder.push_back(tenantMovementInfo);
 				}
 			}
@@ -470,13 +488,9 @@ ACTOR Future<std::vector<TenantMovementInfo>> fetchDBMove(Database db, bool isSr
 }
 
 ACTOR Future<Void> getActiveMovements(TenantBalancer* self, GetActiveMovementsRequest req) {
-	wait(delay(0)); // TODO: this is temporary; to be removed when we add code
-
 	try {
-		// Get all active movement from status json, and transfer them into TenantMovementInfo in reply
-		// TODO acquire the srcPrefix and destPrefix from somewhere
-		state std::vector<TenantMovementInfo> statusAsSrc = wait(fetchDBMove(self->db, true));
-		state std::vector<TenantMovementInfo> statusAsDest = wait(fetchDBMove(self->db, false));
+		state std::vector<TenantMovementInfo> statusAsSrc = wait(fetchDBMove(self, true));
+		state std::vector<TenantMovementInfo> statusAsDest = wait(fetchDBMove(self, false));
 		GetActiveMovementsReply reply;
 		reply.activeMovements.insert(reply.activeMovements.end(), statusAsSrc.begin(), statusAsSrc.end());
 		reply.activeMovements.insert(reply.activeMovements.end(), statusAsDest.begin(), statusAsDest.end());
@@ -492,6 +506,23 @@ ACTOR Future<Void> finishSourceMovement(TenantBalancer* self, FinishSourceMoveme
 	wait(delay(0)); // TODO: this is temporary; to be removed when we add code
 
 	try {
+		// 1.Get target tenant and version
+		// TODO
+
+		// 2. Finish movement
+		Standalone<VectorRef<KeyRangeRef>> backupRanges;
+		backupRanges.add(prefixRange(req.sourceTenant));
+		Database dest = self->getOutgoingMovement(Key(req.sourceTenant)).getDestinationDatabase();
+
+		// TODO check if arguments here are correct - ForceAction especially
+		// TODO check if maxLagSecond is exceeded
+		wait(self->agent.atomicSwitchover(dest,
+		                                  KeyRef(dest->getConnectionRecord()->getConnectionString().toString()),
+		                                  backupRanges,
+		                                  StringRef(),
+		                                  StringRef(),
+		                                  ForceAction{ true },
+		                                  false));
 		FinishSourceMovementReply reply;
 		req.reply.send(reply);
 	} catch (Error& e) {
@@ -505,6 +536,14 @@ ACTOR Future<Void> finishDestinationMovement(TenantBalancer* self, FinishDestina
 	wait(delay(0)); // TODO: this is temporary; to be removed when we add code
 
 	try {
+		// 1.Unlock the prefix of dest db
+		// TODO
+
+		// 2.Remove metadata
+		// TODO write method to remove the records in incomingMovements
+
+		// 3.Finish movement based on prefix and version
+		// TODO
 		FinishDestinationMovementReply reply;
 		req.reply.send(reply);
 	} catch (Error& e) {
@@ -515,9 +554,22 @@ ACTOR Future<Void> finishDestinationMovement(TenantBalancer* self, FinishDestina
 }
 
 ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req) {
-	wait(delay(0)); // TODO: this is temporary; to be removed when we add code
-
+	if (req.tenantName.empty() && req.destConnectionString.empty()) {
+		throw movement_argument_error();
+	}
 	try {
+		std::string srcPrefix =
+		    !req.tenantName.empty() ? req.tenantName : self->getSrcPrefix(req.destConnectionString).get().toString();
+		SourceMovementRecord sourceMovementRecord = self->getOutgoingMovement(Key(srcPrefix));
+
+		// TODO: make sure the parameters in abortBackup() are correct
+		wait(self->agent.abortBackup(sourceMovementRecord.getDestinationDatabase(),
+		                             Key(sourceMovementRecord.getDestDBName()),
+		                             PartialBackup{ false },
+		                             AbortOldBackup::False,
+		                             DstOnly{ false }));
+		wait(self->agent.unlockBackup(sourceMovementRecord.getDestinationDatabase(),
+		                              Key(sourceMovementRecord.getDestDBName())));
 		AbortMovementReply reply;
 		req.reply.send(reply);
 	} catch (Error& e) {
@@ -528,17 +580,16 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 }
 
 ACTOR Future<Void> cleanupMovementSource(TenantBalancer* self, CleanupMovementSourceRequest req) {
-	wait(delay(0)); // TODO: this is temporary; to be removed when we add code
-
 	try {
 		// TODO once the range has been unlocked, it will no longer be legal to run cleanup
 		CleanupMovementSourceRequest::CleanupType cleanupType = req.cleanupType;
 		state std::string tenantName = req.tenantName;
 		if (cleanupType != CleanupMovementSourceRequest::CleanupType::UNLOCK) {
-			// clear specific tenant
+			// erase
 			wait(self->agent.clearPrefix(self->db, Key(tenantName)));
 		}
 		if (cleanupType != CleanupMovementSourceRequest::CleanupType::ERASE) {
+			// unlock
 			wait(self->agent.unlockBackup(self->db, Key(tenantName)));
 		}
 		CleanupMovementSourceReply reply;

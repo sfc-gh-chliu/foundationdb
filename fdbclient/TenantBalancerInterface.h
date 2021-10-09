@@ -125,7 +125,7 @@ struct MoveTenantToClusterRequest {
 
 	MoveTenantToClusterRequest() {}
 	MoveTenantToClusterRequest(KeyRef sourcePrefix, KeyRef destPrefix, std::string destConnectionString)
-	  : sourcePrefix(arena, sourcePrefix), destPrefix(arena, destPrefix),destConnectionString(destConnectionString) {}
+	  : sourcePrefix(arena, sourcePrefix), destPrefix(arena, destPrefix), destConnectionString(destConnectionString) {}
 
 	template <class Ar>
 	void serialize(Ar& ar) {
@@ -219,7 +219,6 @@ struct GetActiveMovementsRequest {
 	Arena arena;
 
 	// TODO: optional source and dest cluster selectors
-
 	ReplyPromise<GetActiveMovementsReply> reply;
 
 	GetActiveMovementsRequest() {}
@@ -251,11 +250,13 @@ struct FinishSourceMovementRequest {
 
 	std::string sourceTenant; // Or prefix?
 	// TODO: dest cluster info
+	double maxLagSecond;
 
 	ReplyPromise<FinishSourceMovementReply> reply;
 
 	FinishSourceMovementRequest() {}
-	FinishSourceMovementRequest(std::string sourceTenant) : sourceTenant(sourceTenant) {}
+	FinishSourceMovementRequest(std::string sourceTenant, double maxLagSecond)
+	  : sourceTenant(sourceTenant), maxLagSecond(maxLagSecond) {}
 
 	template <class Ar>
 	void serialize(Ar& ar) {
@@ -311,10 +312,11 @@ struct AbortMovementRequest {
 	constexpr static FileIdentifier file_identifier = 14058403;
 
 	std::string tenantName;
+	std::string destConnectionString;
+
 	ReplyPromise<AbortMovementReply> reply;
 
 	AbortMovementRequest() {}
-	AbortMovementRequest(std::string tenantName) : tenantName(tenantName) {}
 
 	template <class Ar>
 	void serialize(Ar& ar) {
