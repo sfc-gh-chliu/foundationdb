@@ -20,6 +20,7 @@
 
 #ifndef FDBCLIENT_TENANTBALANCERINTERFACE_H
 #define FDBCLIENT_TENANTBALANCERINTERFACE_H
+#include <stdbool.h>
 #pragma once
 
 #include "fdbclient/FDBTypes.h"
@@ -129,7 +130,7 @@ struct MoveTenantToClusterRequest {
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, sourcePrefix, destPrefix, reply, arena);
+		serializer(ar, sourcePrefix, destPrefix, destConnectionString, reply, arena);
 	}
 };
 
@@ -156,16 +157,17 @@ struct ReceiveTenantFromClusterRequest {
 	KeyRef destPrefix;
 
 	// TODO: source cluster info
+	std::string srcConnectionString;
 
 	ReplyPromise<ReceiveTenantFromClusterReply> reply;
 
 	ReceiveTenantFromClusterRequest() {}
-	ReceiveTenantFromClusterRequest(KeyRef sourcePrefix, KeyRef destPrefix)
-	  : sourcePrefix(arena, sourcePrefix), destPrefix(arena, destPrefix) {}
+	ReceiveTenantFromClusterRequest(KeyRef sourcePrefix, KeyRef destPrefix, std::string srcConnectionString)
+	  : sourcePrefix(arena, sourcePrefix), destPrefix(arena, destPrefix), srcConnectionString(srcConnectionString) {}
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, sourcePrefix, destPrefix, reply, arena);
+		serializer(ar, sourcePrefix, destPrefix, srcConnectionString, reply, arena);
 	}
 };
 
@@ -186,18 +188,26 @@ struct TenantMovementInfo {
 
 	// TODO: how to track destClusterFile?
 	std::string destConnectionString;
-	std::string TenantMovementStatus;
-	std::string seconds_behind;
+	std::string tenantMovementStatus;
+	std::string secondsBehind;
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, sourcePrefix, destPrefix, movementLocation);
+		serializer(
+		    ar, sourcePrefix, destPrefix, movementLocation, destConnectionString, tenantMovementStatus, secondsBehind);
 	}
 
-	std::string toString(bool isJson = false) const {
-		// TODO generate corresponding str
+	std::string toJson() {
+		// TODO transfer the element into json format, after we settle down all the needed elements here
 		return "";
 	}
+
+	std::string toString() {
+		// TODO transfer the element into plain text format, after we settle down all the needed elements here
+		return "";
+	}
+
+	std::string toString(bool isJson = false) const { return isJson ? toJson() : toString(); }
 };
 
 struct GetActiveMovementsReply {
@@ -241,7 +251,7 @@ struct FinishSourceMovementReply {
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, version);
+		serializer(ar, tenantName, version);
 	}
 };
 
@@ -250,7 +260,7 @@ struct FinishSourceMovementRequest {
 
 	std::string sourceTenant; // Or prefix?
 	// TODO: dest cluster info
-	double maxLagSecond;
+	double maxLagSeconds;
 
 	ReplyPromise<FinishSourceMovementReply> reply;
 
@@ -260,7 +270,7 @@ struct FinishSourceMovementRequest {
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, sourceTenant, reply);
+		serializer(ar, sourceTenant, maxLagSeconds, reply);
 	}
 };
 
@@ -312,7 +322,7 @@ struct AbortMovementRequest {
 	constexpr static FileIdentifier file_identifier = 14058403;
 
 	std::string tenantName;
-	std::string destConnectionString;
+	bool isSrc = true;
 
 	ReplyPromise<AbortMovementReply> reply;
 
@@ -320,7 +330,7 @@ struct AbortMovementRequest {
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, tenantName, reply);
+		serializer(ar, tenantName, isSrc, reply);
 	}
 };
 

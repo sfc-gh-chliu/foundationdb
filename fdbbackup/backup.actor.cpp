@@ -22,7 +22,6 @@
 #include "fdbclient/JsonBuilder.h"
 #include "flow/Arena.h"
 #include "flow/Error.h"
-#include "flow/ITrace.h"
 #include "flow/Trace.h"
 #define BOOST_DATE_TIME_NO_LIB
 #include <boost/interprocess/managed_shared_memory.hpp>
@@ -58,6 +57,7 @@
 #include <unordered_map>
 #include <vector>
 #include <unordered_set>
+#include <float.h>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -2166,10 +2166,13 @@ ACTOR Future<Void> runAgent(Database db) {
 ACTOR Future<Void> submitDBMove(Database src, Database dest, Key destPrefix, Key srcPrefix) {
 	try {
 		// TODO: transaction guarantee
-		state ReceiveTenantFromClusterRequest destRequest(srcPrefix, destPrefix);
+		state ReceiveTenantFromClusterRequest destRequest(
+		    srcPrefix, destPrefix, src->getConnectionRecord()->getConnectionString().toString());
 		state ErrorOr<ReceiveTenantFromClusterReply> receiveTenantFromClusterReply =
 		    wait(dest->getTenantBalancer().get().receiveTenantFromCluster.tryGetReply(destRequest));
-
+		if (receiveTenantFromClusterReply.isError()) {
+			throw receiveTenantFromClusterReply.getError();
+		}
 		state MoveTenantToClusterRequest srcRequest(
 		    srcPrefix, destPrefix, dest->getConnectionRecord()->getConnectionString().toString());
 		state ErrorOr<MoveTenantToClusterReply> moveTenantToClusterReply =
@@ -2179,6 +2182,7 @@ ACTOR Future<Void> submitDBMove(Database src, Database dest, Key destPrefix, Key
 		}
 		printf("The data movement was successfully submitted.\n");
 	} catch (Error& e) {
+		// TODO This list of errors may change
 		if (e.code() == error_code_actor_cancelled)
 			throw;
 		switch (e.code()) {
@@ -2211,17 +2215,17 @@ ACTOR Future<Void> statusDBMove(Database src, Database dest, KeyRef srcPrefix, b
 
 		// Filter for desired movements
 		std::vector<TenantMovementInfo> activeMovements = getActiveMovementsReply.get().activeMovements;
-		bool findMovement = false;
+		bool foundMovement = false;
 		for (const auto& movement : activeMovements) {
 			if (movement.destConnectionString == dest->getConnectionRecord()->getConnectionString().toString()) {
-				findMovement = true;
+				foundMovement = true;
 				std::string statusText = movement.toString(json);
 				printf("%s\n", statusText.c_str());
 				break;
 			}
 		}
-		if (!findMovement) {
-			throw movement_no_such_status();
+		if (!foundMovement) {
+			throw movement_not_found();
 		}
 	} catch (Error& e) {
 		if (e.code() == error_code_actor_cancelled)
@@ -2298,10 +2302,10 @@ ACTOR Future<Void> listDBMove(Database src, Database dest) {
 	return Void();
 }
 
-ACTOR Future<Void> finishDBMove(Database src, Database dest, Key srcPrefix, double maxLagSecond) {
+ACTOR Future<Void> finishDBMove(Database src, Database dest, Key srcPrefix, Optional<double> maxLagSeconds) {
 	// TODO find way to get max lag parameter
 	try {
-		FinishSourceMovementRequest finishSourceMovementRequest(srcPrefix.toString(), maxLagSecond);
+		FinishSourceMovementRequest finishSourceMovementRequest(srcPrefix.toString(), maxLagSeconds.orDefault(DBL_MAX));
 		state ErrorOr<FinishSourceMovementReply> finishSourceMovementReply =
 		    wait(src->getTenantBalancer().get().finishSourceMovement.tryGetReply(finishSourceMovementRequest));
 		if (finishSourceMovementReply.isError()) {
@@ -2336,42 +2340,21 @@ ACTOR Future<Void> finishDBMove(Database src, Database dest, Key srcPrefix, doub
 	return Void();
 }
 
-ACTOR Future<Void> abortDBMove(Database src, Database dest) {
+ACTOR Future<Void> abortDBMove(Optional<Database> src, Optional<Database> dest, Key targetPrefix) {
 	try {
-		AbortMovementRequest srcAbortMovementRequest;
-		srcAbortMovementRequest.destConnectionString = dest->getConnectionRecord()->getConnectionString().toString();
-		state ErrorOr<AbortMovementReply> abortMovementReply =
-		    wait(src->getTenantBalancer().get().abortMovement.tryGetReply(srcAbortMovementRequest));
-		if (abortMovementReply.isError()) {
-			throw abortMovementReply.getError();
-		}
-		printf("The data movement was successfully aborted.\n");
-	} catch (Error& e) {
-		if (e.code() == error_code_actor_cancelled)
+		// TODO it's a double check. Should we remove it?
+		if (!src.present() && !dest.present()) {
 			throw;
-		switch (e.code()) {
-		case error_code_backup_error:
-			fprintf(stderr, "ERROR: An error was encountered during submission\n");
-			break;
-		case error_code_backup_unneeded:
-			fprintf(stderr, "ERROR: A data movement was not running\n");
-			break;
-		default:
-			fprintf(stderr, "ERROR: %s\n", e.what());
-			break;
 		}
-		throw;
-	}
-
-	return Void();
-}
-
-ACTOR Future<Void> abortDBMove(Database src, std::string srcPrefix) {
-	try {
-		AbortMovementRequest srcAbortMovementRequest;
-		srcAbortMovementRequest.tenantName = srcPrefix;
+		AbortMovementRequest abortMovementRequest;
+		abortMovementRequest.tenantName = targetPrefix.toString();
+		abortMovementRequest.isSrc = src.present();
 		state ErrorOr<AbortMovementReply> abortMovementReply =
-		    wait(src->getTenantBalancer().get().abortMovement.tryGetReply(srcAbortMovementRequest));
+		    wait((abortMovementRequest.isSrc ? src : dest)
+		             .get()
+		             ->getTenantBalancer()
+		             .get()
+		             .abortMovement.tryGetReply(abortMovementRequest));
 		if (abortMovementReply.isError()) {
 			throw abortMovementReply.getError();
 		}
@@ -2411,24 +2394,6 @@ ACTOR Future<Void> cleanupDBMove(Database src, Key srcPrefix, CleanupMovementSou
 		throw;
 	}
 
-	return Void();
-}
-
-ACTOR Future<Void> clearSrcDBMove(Database src, KeyRef srcPrefix) {
-	try {
-		state CleanupMovementSourceRequest cleanupMovementSourceRequest(
-		    srcPrefix.toString(), CleanupMovementSourceRequest::CleanupType::ERASE);
-		state ErrorOr<CleanupMovementSourceReply> cleanupMovementSourceReply =
-		    wait(src->getTenantBalancer().get().cleanupMovementSource.tryGetReply(cleanupMovementSourceRequest));
-		if (cleanupMovementSourceReply.isError()) {
-			throw cleanupMovementSourceReply.getError();
-		}
-	} catch (Error& e) {
-		if (e.code() == error_code_actor_cancelled)
-			throw;
-		fprintf(stderr, "ERROR: %s\n", e.what());
-		throw;
-	}
 	return Void();
 }
 
@@ -3950,7 +3915,7 @@ int main(int argc, char* argv[]) {
 		Optional<std::string> encryptionKeyFile;
 
 		BackupModifyOptions modifyOptions;
-		double maxLagSec = 1;
+		Optional<double> maxLagSec;
 
 		if (argc == 1) {
 			printUsage(programExe, false);
@@ -4310,9 +4275,20 @@ int main(int argc, char* argv[]) {
 			case OPT_JSON:
 				jsonOutput = true;
 				break;
-			case OPT_MAX_LAG_SEC:
-				maxLagSec = atof(args->OptionArg());
+			case OPT_MAX_LAG_SEC: {
+				char* param = args->OptionArg();
+				char* end = nullptr;
+				double parseResult = std::strtod(param, &end);
+				if (end != nullptr || parseResult == 0) {
+					std::string errorMessage =
+					    end != nullptr ? "max lag seconds parameter parsing error" : "max lag seconds illegal";
+					fprintf(stderr, "ERROR: %s `%s'\n", errorMessage.c_str(), param);
+					printHelpTeaser(argv[0]);
+					return FDB_EXIT_ERROR;
+				}
+				maxLagSec = parseResult;
 				break;
+			}
 			}
 		}
 
@@ -4868,15 +4844,20 @@ int main(int argc, char* argv[]) {
 				if (!initCluster() || !initSourceCluster(true)) {
 					return FDB_EXIT_ERROR;
 				}
-				f = stopAfter(finishDBMove(sourceDb, db, Key(removePrefix), 10));
+				f = stopAfter(finishDBMove(sourceDb, db, Key(removePrefix), maxLagSec));
 				break;
-			case DBMoveType::ABORT:
-				if (!initSourceCluster(true) || (!initCluster() && removePrefix.empty())) {
+			case DBMoveType::ABORT: {
+				bool canInitCluster = initCluster();
+				bool canInitSourceCluster = initSourceCluster(true);
+				if (!canInitCluster && !canInitSourceCluster) {
 					return FDB_EXIT_ERROR;
 				}
-				f = stopAfter((removePrefix.empty() ? abortDBMove(sourceDb, db) : abortDBMove(sourceDb, removePrefix)));
+				// TODO if both clusters are able to be initialized, what else should we consider?
+				f = stopAfter(abortDBMove(sourceDb, db, canInitSourceCluster ? Key(removePrefix) : Key(addPrefix)));
 				break;
+			}
 			case DBMoveType::CLEAN:
+				// TODO combine CLEAN and CLEAR_SRC into one
 				if (!initCluster()) {
 					return FDB_EXIT_ERROR;
 				}
@@ -4887,7 +4868,8 @@ int main(int argc, char* argv[]) {
 				if (!initSourceCluster(true)) {
 					return FDB_EXIT_ERROR;
 				}
-				f = stopAfter(clearSrcDBMove(sourceDb, removePrefix));
+				f = stopAfter(
+				    cleanupDBMove(sourceDb, Key(removePrefix), CleanupMovementSourceRequest::CleanupType::ERASE));
 				break;
 			case DBMoveType::LIST: {
 				bool canInitCluster = initCluster();

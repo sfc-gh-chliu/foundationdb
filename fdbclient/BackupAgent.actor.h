@@ -517,12 +517,6 @@ public:
 		    db, [=](Reference<ReadYourWritesTransaction> tr) { return clearPrefix(tr, db, removePrefix); });
 	}
 
-	Future<bool> isTenantEmpty(Reference<ReadYourWritesTransaction> tr, Database db, Key prefix);
-	Future<bool> isTenantEmpty(Database db, Key prefix) {
-		return runRYWTransaction(
-		    db, [=](Reference<ReadYourWritesTransaction> tr) { return isTenantEmpty(tr, db, prefix); });
-	}
-
 	Future<Void> atomicSwitchover(Database dest,
 	                              Key tagName,
 	                              Standalone<VectorRef<KeyRangeRef>> backupRanges,
