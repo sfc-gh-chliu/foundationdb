@@ -229,42 +229,11 @@ struct TenantMovementInfo {
 		           databaseBackupStatus);
 	}
 
-	std::unordered_map<std::string, std::string> getStatusInfoMap() const {
-		std::unordered_map<std::string, std::string> statusInfoMap;
-		statusInfoMap["movementID"] = movementId.toString();
-		statusInfoMap["movementLocation"] = TenantBalancerInterface::movementLocationToString(movementLocation);
-		statusInfoMap["sourceConnectionString"] = sourceConnectionString;
-		statusInfoMap["destinationConnectionString"] = destinationConnectionString;
-		statusInfoMap["sourcePrefix"] = sourcePrefix.toString();
-		statusInfoMap["destPrefix"] = destPrefix.toString();
-		statusInfoMap["isSourceLocked"] = isSourceLocked;
-		statusInfoMap["isDestinationLocked"] = isDestinationLocked;
-		statusInfoMap["movementState"] = TenantBalancerInterface::movementStateToString(movementState);
-		statusInfoMap["mutationLag"] = std::to_string(mutationLag);
-		statusInfoMap["databaseTimingDelay"] = std::to_string(databaseTimingDelay);
-		statusInfoMap["switchVersion"] = std::to_string(switchVersion);
-		statusInfoMap["errorMessage"] = errorMessage;
-		statusInfoMap["databaseBackupStatus"] = databaseBackupStatus;
-		return statusInfoMap;
-	}
+	std::unordered_map<std::string, std::string> getStatusInfoMap() const;
 
-	std::string toJson() const {
-		// TODO 1. use actual type rather than string 2. Exclude values without being set
-		json_spirit::mValue statusRootValue;
-		JSONDoc statusRoot(statusRootValue);
-		for (const auto& itr : getStatusInfoMap()) {
-			statusRoot.create(itr.first) = itr.second;
-		}
-		return json_spirit::write_string(statusRootValue);
-	}
+	std::string toJson() const;
 
-	std::string toString() const {
-		std::string movementInfo;
-		for (const auto& itr : getStatusInfoMap()) {
-			movementInfo += itr.first + " : " + itr.second + "\n";
-		}
-		return movementInfo;
-	}
+	std::string toString() const;
 };
 
 struct GetActiveMovementsReply {

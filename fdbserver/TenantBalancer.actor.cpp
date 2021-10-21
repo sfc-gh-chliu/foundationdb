@@ -37,36 +37,6 @@
 
 static const StringRef DBMOVE_TAG_PREFIX = "MovingData/"_sr;
 
-std::string TenantBalancerInterface::movementStateToString(MovementState movementState) {
-	switch (movementState) {
-	case MovementState::INITIALIZING:
-		return "Initializing";
-	case MovementState::STARTED:
-		return "Started";
-	case MovementState::READY_FOR_SWITCH:
-		return "ReadyForSwitch";
-	case MovementState::SWITCHING:
-		return "Switching";
-	case MovementState::COMPLETED:
-		return "Completed";
-	case MovementState::ERROR:
-		return "Error";
-	default:
-		ASSERT(false);
-	}
-}
-
-std::string TenantBalancerInterface::movementLocationToString(MovementLocation movementLocation) {
-	switch (movementLocation) {
-	case MovementLocation::SOURCE:
-		return "Source";
-	case MovementLocation::DEST:
-		return "Destination";
-	default:
-		ASSERT(false);
-	}
-}
-
 class MovementRecord {
 public:
 	MovementRecord() {}
@@ -144,6 +114,7 @@ public:
 			// TODO what should we do here?
 			return "";
 		}
+		// TODO what if no error message
 		return errorMessage;
 	}
 
@@ -454,7 +425,8 @@ struct TenantBalancer {
 				            TenantBalancerInterface::movementStateToString(movementItr->second.movementState))
 				    .detail("SourcePrefix", movementItr->second.getSourcePrefix())
 				    .detail("DestinationPrefix", movementItr->second.getDestinationPrefix());
-
+				// TODO include e.what here
+				// TODO more:
 				movementItr->second.setMovementError("Recovery source movement error.");
 				wait(self->saveMovementRecord(movementItr->second));
 			}
@@ -925,6 +897,7 @@ ACTOR Future<std::vector<TenantMovementInfo>> fetchDBMove(TenantBalancer* self, 
 			tenantMovementInfo.databaseBackupStatus = prefixToDRInfo[prefix.toString()].second;
 			// TODO assign databaseTimingDelay
 			tenantMovementInfo.switchVersion = record.switchVersion;
+			// TODO change it to optinal
 			tenantMovementInfo.errorMessage = record.getErrorMessage();
 		}
 	} catch (Error& e) {
@@ -1015,6 +988,12 @@ ACTOR Future<Void> getActiveMovements(TenantBalancer* self, GetActiveMovementsRe
 	}
 
 	return Void();
+}
+
+ACTOR Future<bool> checkForActiveDr(TenantBalancer* self, Key prefix, MovementLocation location) {
+	state std::vector<TenantMovementInfo> filterResult = wait(getFilteredMovements(
+	    self, Optional<Key>(prefix), Optional<std::string>(), Optional<MovementLocation>(location)));
+	return filterResult.size() == 1;
 }
 
 Future<Version> lockSourceTenant(TenantBalancer* self, Key prefix) {
