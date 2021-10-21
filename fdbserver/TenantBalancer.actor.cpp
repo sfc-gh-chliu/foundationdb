@@ -682,6 +682,15 @@ ACTOR Future<Void> moveTenantToCluster(TenantBalancer* self, MoveTenantToCluster
 	++self->moveTenantToClusterRequests;
 
 	try {
+		// Check if there is any existed same movement record
+		if (self->getOutgoingMovements().count(req.sourcePrefix)) {
+			TraceEvent(SevWarn, "TenantBalancerRepeated")
+			    .detail("SourcePrefix", req.sourcePrefix)
+			    .detail("DestinationPrefix", req.destPrefix)
+			    .detail("DestinationConnectionString", req.destConnectionString);
+			throw movement_repeated();
+		}
+		
 		state Optional<Database> destDatabase;
 		state std::string databaseName = req.destConnectionString;
 
