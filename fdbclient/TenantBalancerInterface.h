@@ -208,7 +208,7 @@ struct TenantMovementInfo {
 	                             // converted to seconds
 	Version switchVersion;
 	std::string errorMessage;
-	std::string databaseBackupStatus; // verbal status of the DR
+	std::string databaseBackupStatus; // Status of the DR
 
 	template <class Ar>
 	void serialize(Ar& ar) {

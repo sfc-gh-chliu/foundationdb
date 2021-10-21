@@ -106,17 +106,12 @@ public:
 
 	void setMovementError(const std::string& errorMessage) {
 		movementState = MovementState::ERROR;
-		this->errorMessage = errorMessage;
+		if (!this->errorMessage.present()) {
+			this->errorMessage = errorMessage;
+		}
 	}
 
-	std::string getErrorMessage() const {
-		if (movementState != MovementState::ERROR) {
-			// TODO what should we do here?
-			return "";
-		}
-		// TODO what if no error message
-		return errorMessage;
-	}
+	Optional<std::string> getErrorMessage() const { return errorMessage; }
 
 	MovementState movementState = MovementState::INITIALIZING;
 	Version switchVersion = invalidVersion;
@@ -131,7 +126,7 @@ private:
 
 	std::string peerDatabaseName;
 	Database peerDatabase;
-	std::string errorMessage;
+	Optional<std::string> errorMessage;
 };
 
 ACTOR static Future<Void> extractClientInfo(Reference<AsyncVar<ServerDBInfo> const> dbInfo,
@@ -425,9 +420,7 @@ struct TenantBalancer {
 				            TenantBalancerInterface::movementStateToString(movementItr->second.movementState))
 				    .detail("SourcePrefix", movementItr->second.getSourcePrefix())
 				    .detail("DestinationPrefix", movementItr->second.getDestinationPrefix());
-				// TODO include e.what here
-				// TODO more:
-				movementItr->second.setMovementError("Recovery source movement error.");
+				movementItr->second.setMovementError(format("Unable to recover movement: %s", e.what()));
 				wait(self->saveMovementRecord(movementItr->second));
 			}
 
@@ -461,7 +454,7 @@ struct TenantBalancer {
 				    .detail("SourcePrefix", movementItr->second.getSourcePrefix())
 				    .detail("DestinationPrefix", movementItr->second.getDestinationPrefix());
 
-				movementItr->second.setMovementError("Recovery destination movement error.");
+				movementItr->second.setMovementError(format("Unable to recover movement: %s", e.what()));
 				wait(self->saveMovementRecord(movementItr->second));
 			}
 
@@ -906,8 +899,10 @@ ACTOR Future<std::vector<TenantMovementInfo>> fetchDBMove(TenantBalancer* self, 
 			tenantMovementInfo.databaseBackupStatus = prefixToDRInfo[prefix.toString()].second;
 			// TODO assign databaseTimingDelay
 			tenantMovementInfo.switchVersion = record.switchVersion;
-			// TODO change it to optinal
-			tenantMovementInfo.errorMessage = record.getErrorMessage();
+			auto errorMessageOptional = record.getErrorMessage();
+			if (errorMessageOptional.present()) {
+				tenantMovementInfo.errorMessage = errorMessageOptional.get();
+			}
 		}
 	} catch (Error& e) {
 		if (e.code() == error_code_actor_cancelled)
@@ -922,9 +917,9 @@ void filterActiveMove(const std::vector<TenantMovementInfo>& originStatus,
                       Optional<Key> prefixFilter,
                       Optional<std::string> peerDatabaseConnectionStringFilter) {
 	for (const auto& status : originStatus) {
-		const std::string& localPrefix =
-		    (status.movementLocation == MovementLocation::SOURCE ? status.sourcePrefix : status.destPrefix).toString();
-		if (prefixFilter.present() && prefixFilter.get().toString() != localPrefix) {
+		Key localPrefix =
+		    (status.movementLocation == MovementLocation::SOURCE ? status.sourcePrefix : status.destPrefix);
+		if (prefixFilter.present() && prefixFilter.get() != localPrefix) {
 			continue;
 		}
 		const std::string& remoteDatabaseConnectionString = status.movementLocation == MovementLocation::SOURCE
@@ -961,12 +956,12 @@ ACTOR Future<Void> getActiveMovements(TenantBalancer* self, GetActiveMovementsRe
 	++self->getActiveMovementsRequests;
 
 	TraceEvent(SevDebug, "TenantBalancerGetActiveMovements", self->tbi.id())
-	    .detail("PrefixFilter", req.prefixFilter.present() ? req.prefixFilter.get().toString() : "[not set]")
+	    .detail("PrefixFilter", req.prefixFilter)
 	    .detail("LocationFilter",
 	            req.locationFilter.present()
 	                ? TenantBalancerInterface::movementLocationToString(req.locationFilter.get())
 	                : "[not set]")
-	    .detail("PeerClusterFilter", req.peerDatabaseConnectionStringFilter.orDefault("[not set]"));
+	    .detail("PeerClusterFilter", req.peerDatabaseConnectionStringFilter);
 
 	try {
 		state std::vector<TenantMovementInfo> status = wait(
@@ -1037,7 +1032,7 @@ ACTOR Future<Void> finishSourceMovement(TenantBalancer* self, FinishSourceMoveme
 
 		// Check that the DR is ready to switch
 		if (targetMovementInfo.databaseBackupStatus == "has errored") {
-			record.setMovementError("Database backup has error.");
+			record.setMovementError("The DR copying the data has failed.");
 			wait(self->saveMovementRecord(record));
 
 			TraceEvent(SevWarn, "TenantBalancerBackupError", self->tbi.id())
@@ -1318,7 +1313,7 @@ ACTOR Future<Void> abortMovementDueToFailedDr(TenantBalancer* self, MovementReco
 
 	wait(abortPeer(self, *record));
 
-	record->setMovementError("Abort movement due to failed DR.");
+	record->setMovementError("The DR copying the data has failed or stopped running");
 	wait(self->saveMovementRecord(*record));
 
 	return Void();
