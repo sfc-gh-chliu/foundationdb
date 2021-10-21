@@ -134,6 +134,19 @@ public:
 		return record;
 	}
 
+	void setMovementError(const std::string& errorMessage) {
+		movementState = MovementState::ERROR;
+		this->errorMessage = errorMessage;
+	}
+
+	std::string getErrorMessage() const {
+		if (movementState != MovementState::ERROR) {
+			// TODO what should we do here?
+			return "";
+		}
+		return errorMessage;
+	}
+
 	MovementState movementState = MovementState::INITIALIZING;
 	Version switchVersion = invalidVersion;
 
@@ -147,6 +160,7 @@ private:
 
 	std::string peerDatabaseName;
 	Database peerDatabase;
+	std::string errorMessage;
 };
 
 ACTOR static Future<Void> extractClientInfo(Reference<AsyncVar<ServerDBInfo> const> dbInfo,
@@ -441,8 +455,7 @@ struct TenantBalancer {
 				    .detail("SourcePrefix", movementItr->second.getSourcePrefix())
 				    .detail("DestinationPrefix", movementItr->second.getDestinationPrefix());
 
-				// TODO: store error string in movement record
-				movementItr->second.movementState = MovementState::ERROR;
+				movementItr->second.setMovementError("Recovery source movement error.");
 				wait(self->saveMovementRecord(movementItr->second));
 			}
 
@@ -476,7 +489,7 @@ struct TenantBalancer {
 				    .detail("SourcePrefix", movementItr->second.getSourcePrefix())
 				    .detail("DestinationPrefix", movementItr->second.getDestinationPrefix());
 
-				movementItr->second.movementState = MovementState::ERROR;
+				movementItr->second.setMovementError("Recovery destination movement error.");
 				wait(self->saveMovementRecord(movementItr->second));
 			}
 
@@ -912,7 +925,7 @@ ACTOR Future<std::vector<TenantMovementInfo>> fetchDBMove(TenantBalancer* self, 
 			tenantMovementInfo.databaseBackupStatus = prefixToDRInfo[prefix.toString()].second;
 			// TODO assign databaseTimingDelay
 			tenantMovementInfo.switchVersion = record.switchVersion;
-			// errorMessage
+			tenantMovementInfo.errorMessage = record.getErrorMessage();
 		}
 	} catch (Error& e) {
 		if (e.code() == error_code_actor_cancelled)
@@ -929,7 +942,7 @@ void filterActiveMove(const std::vector<TenantMovementInfo>& originStatus,
 	for (const auto& status : originStatus) {
 		const std::string& localPrefix =
 		    (status.movementLocation == MovementLocation::SOURCE ? status.sourcePrefix : status.destPrefix).toString();
-		if (prefixFilter.present() && prefixFilter.get() != localPrefix) {
+		if (prefixFilter.present() && prefixFilter.get().toString() != localPrefix) {
 			continue;
 		}
 		const std::string& remoteDatabaseConnectionString = status.movementLocation == MovementLocation::SOURCE
@@ -966,12 +979,12 @@ ACTOR Future<Void> getActiveMovements(TenantBalancer* self, GetActiveMovementsRe
 	++self->getActiveMovementsRequests;
 
 	TraceEvent(SevDebug, "TenantBalancerGetActiveMovements", self->tbi.id())
-	    .detail("PrefixFilter", req.prefixFilter)
+	    .detail("PrefixFilter", req.prefixFilter.present() ? req.prefixFilter.get().toString() : "[not set]")
 	    .detail("LocationFilter",
 	            req.locationFilter.present()
 	                ? TenantBalancerInterface::movementLocationToString(req.locationFilter.get())
 	                : "[not set]")
-	    .detail("PeerClusterFilter", req.peerDatabaseConnectionStringFilter);
+	    .detail("PeerClusterFilter", req.peerDatabaseConnectionStringFilter.orDefault("[not set]"));
 
 	try {
 		state std::vector<TenantMovementInfo> status = wait(
@@ -1036,7 +1049,7 @@ ACTOR Future<Void> finishSourceMovement(TenantBalancer* self, FinishSourceMoveme
 
 		// Check that the DR is ready to switch
 		if (targetMovementInfo.databaseBackupStatus == "has errored") {
-			record.movementState = MovementState::ERROR;
+			record.setMovementError("Database backup has error.");
 			wait(self->saveMovementRecord(record));
 
 			TraceEvent(SevWarn, "TenantBalancerBackupError", self->tbi.id())
@@ -1317,7 +1330,7 @@ ACTOR Future<Void> abortMovementDueToFailedDr(TenantBalancer* self, MovementReco
 
 	wait(abortPeer(self, *record));
 
-	record->movementState = MovementState::ERROR;
+	record->setMovementError("Abort movement due to failed DR.");
 	wait(self->saveMovementRecord(*record));
 
 	return Void();

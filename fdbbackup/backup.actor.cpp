@@ -2260,8 +2260,7 @@ ACTOR Future<Void> fetchAndDisplayDBMove(Database db,
 		state std::vector<TenantMovementInfo> activeMovements =
 		    wait(getActiveMovements(db, prefixFilter, peerDatabaseConnectionStringFilter, locationFilter));
 
-		printf("%s %s %s\n",
-		       "List running data movement",
+		printf("List running data movement %s %s\n",
 		       (locationFilter.orDefault(MovementLocation::SOURCE) == MovementLocation::SOURCE ? "from" : "to"),
 		       db->getConnectionRecord()->getConnectionString().toString().c_str());
 		for (const auto& movement : activeMovements) {

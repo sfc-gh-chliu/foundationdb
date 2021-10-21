@@ -208,7 +208,7 @@ struct TenantMovementInfo {
 	                             // converted to seconds
 	Version switchVersion;
 	std::string errorMessage;
-	std::string databaseBackupStatus;
+	std::string databaseBackupStatus; // verbal status of the DR
 
 	template <class Ar>
 	void serialize(Ar& ar) {
@@ -231,17 +231,15 @@ struct TenantMovementInfo {
 
 	std::unordered_map<std::string, std::string> getStatusInfoMap() const {
 		std::unordered_map<std::string, std::string> statusInfoMap;
-		// TODO transfer enum to real meaning string
 		statusInfoMap["movementID"] = movementId.toString();
-		statusInfoMap["movementLocation"] = std::to_string(static_cast<int>(movementLocation));
+		statusInfoMap["movementLocation"] = TenantBalancerInterface::movementLocationToString(movementLocation);
 		statusInfoMap["sourceConnectionString"] = sourceConnectionString;
 		statusInfoMap["destinationConnectionString"] = destinationConnectionString;
 		statusInfoMap["sourcePrefix"] = sourcePrefix.toString();
 		statusInfoMap["destPrefix"] = destPrefix.toString();
 		statusInfoMap["isSourceLocked"] = isSourceLocked;
 		statusInfoMap["isDestinationLocked"] = isDestinationLocked;
-		// TODO transfer enum to real meaning string
-		statusInfoMap["movementState"] = std::to_string(static_cast<int>(movementState));
+		statusInfoMap["movementState"] = TenantBalancerInterface::movementStateToString(movementState);
 		statusInfoMap["mutationLag"] = std::to_string(mutationLag);
 		statusInfoMap["databaseTimingDelay"] = std::to_string(databaseTimingDelay);
 		statusInfoMap["switchVersion"] = std::to_string(switchVersion);
