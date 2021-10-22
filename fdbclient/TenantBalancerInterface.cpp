@@ -51,34 +51,100 @@ std::string TenantBalancerInterface::movementLocationToString(MovementLocation m
 	}
 }
 
-std::unordered_map<std::string, std::string> TenantMovementInfo::getStatusInfoMap() const {
-	// TODO don't put if unset
-	std::unordered_map<std::string, std::string> statusInfoMap;
-	statusInfoMap["movementID"] = movementId.toString();
-	statusInfoMap["movementLocation"] = TenantBalancerInterface::movementLocationToString(movementLocation);
-	statusInfoMap["sourceConnectionString"] = sourceConnectionString;
-	statusInfoMap["destinationConnectionString"] = destinationConnectionString;
-	statusInfoMap["sourcePrefix"] = sourcePrefix.toString();
-	statusInfoMap["destPrefix"] = destPrefix.toString();
-	statusInfoMap["isSourceLocked"] = isSourceLocked;
-	statusInfoMap["isDestinationLocked"] = isDestinationLocked;
-	statusInfoMap["movementState"] = TenantBalancerInterface::movementStateToString(movementState);
-	statusInfoMap["mutationLag"] = std::to_string(mutationLag);
-	statusInfoMap["databaseTimingDelay"] = std::to_string(databaseTimingDelay);
-	statusInfoMap["switchVersion"] = std::to_string(switchVersion);
-	statusInfoMap["errorMessage"] = errorMessage;
-	statusInfoMap["databaseBackupStatus"] = databaseBackupStatus;
-	return statusInfoMap;
-}
-
 std::string TenantMovementInfo::toJson() const {
-	// TODO 1. use actual type rather than string 2. Exclude values without being set
 	json_spirit::mValue statusRootValue;
 	JSONDoc statusRoot(statusRootValue);
-	for (const auto& itr : getStatusInfoMap()) {
-		statusRoot.create(itr.first) = itr.second;
+	if (movementId.present()) {
+		statusRoot.create("movementID") = movementId.get().toString();
+	}
+	if (movementLocation.present()) {
+		statusRoot.create("movementLocation") =
+		    TenantBalancerInterface::movementLocationToString(movementLocation.get());
+	}
+	if (sourceConnectionString.present()) {
+		statusRoot.create("sourceConnectionString") = sourceConnectionString.get();
+	}
+	if (destinationConnectionString.present()) {
+		statusRoot.create("destinationConnectionString") = destinationConnectionString.get();
+	}
+	if (sourcePrefix.present()) {
+		statusRoot.create("sourcePrefix") = sourcePrefix.get().toString();
+	}
+	if (destPrefix.present()) {
+		statusRoot.create("destPrefix") = destPrefix.get().toString();
+	}
+	if (isSourceLocked.present()) {
+		statusRoot.create("isSourceLocked") = isSourceLocked.get();
+	}
+	if (isDestinationLocked.present()) {
+		statusRoot.create("isDestinationLocked") = isDestinationLocked.get();
+	}
+	if (movementState.present()) {
+		statusRoot.create("movementState") = TenantBalancerInterface::movementStateToString(movementState.get());
+	}
+	if (mutationLag.present()) {
+		statusRoot.create("mutationLag") = mutationLag.get();
+	}
+	if (databaseTimingDelay.present()) {
+		statusRoot.create("databaseTimingDelay") = databaseTimingDelay.get();
+	}
+	if (switchVersion.present()) {
+		statusRoot.create("switchVersion") = switchVersion.get();
+	}
+	if (errorMessage.present()) {
+		statusRoot.create("errorMessage") = errorMessage.get();
+	}
+	if (databaseBackupStatus.present()) {
+		statusRoot.create("databaseBackupStatus") = databaseBackupStatus.get();
 	}
 	return json_spirit::write_string(statusRootValue);
+}
+
+std::unordered_map<std::string, std::string> TenantMovementInfo::getStatusInfoMap() const {
+	std::unordered_map<std::string, std::string> statusInfoMap;
+	if (movementId.present()) {
+		statusInfoMap["movementID"] = movementId.get().toString();
+	}
+	if (movementLocation.present()) {
+		statusInfoMap["movementLocation"] = TenantBalancerInterface::movementLocationToString(movementLocation.get());
+	}
+	if (sourceConnectionString.present()) {
+		statusInfoMap["sourceConnectionString"] = sourceConnectionString.get();
+	}
+	if (destinationConnectionString.present()) {
+		statusInfoMap["destinationConnectionString"] = destinationConnectionString.get();
+	}
+	if (sourcePrefix.present()) {
+		statusInfoMap["sourcePrefix"] = sourcePrefix.get().toString();
+	}
+	if (destPrefix.present()) {
+		statusInfoMap["destPrefix"] = destPrefix.get().toString();
+	}
+	if (isSourceLocked.present()) {
+		statusInfoMap["isSourceLocked"] = std::to_string(isSourceLocked.get());
+	}
+	if (isDestinationLocked.present()) {
+		statusInfoMap["isDestinationLocked"] = std::to_string(isDestinationLocked.get());
+	}
+	if (movementState.present()) {
+		statusInfoMap["movementState"] = TenantBalancerInterface::movementStateToString(movementState.get());
+	}
+	if (mutationLag.present()) {
+		statusInfoMap["mutationLag"] = std::to_string(mutationLag.get());
+	}
+	if (databaseTimingDelay.present()) {
+		statusInfoMap["databaseTimingDelay"] = std::to_string(databaseTimingDelay.get());
+	}
+	if (switchVersion.present()) {
+		statusInfoMap["switchVersion"] = std::to_string(switchVersion.get());
+	}
+	if (errorMessage.present()) {
+		statusInfoMap["errorMessage"] = errorMessage.get();
+	}
+	if (databaseBackupStatus.present()) {
+		statusInfoMap["databaseBackupStatus"] = databaseBackupStatus.get();
+	}
+	return statusInfoMap;
 }
 
 std::string TenantMovementInfo::toString() const {

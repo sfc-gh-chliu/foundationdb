@@ -2267,11 +2267,11 @@ ACTOR Future<Void> fetchAndDisplayDBMove(Database db,
 		for (const auto& movement : activeMovements) {
 			printf("source prefix: %s destination prefix: %s source cluster: %s destination cluster: %s movement "
 			       "state: %s\n",
-			       movement.sourcePrefix.toString().c_str(),
-			       movement.destPrefix.toString().c_str(),
-			       movement.sourceConnectionString.c_str(),
-			       movement.destinationConnectionString.c_str(),
-			       std::to_string(static_cast<int>(movement.movementState)).c_str());
+			       movement.sourcePrefix.get().toString().c_str(),
+			       movement.destPrefix.get().toString().c_str(),
+			       movement.sourceConnectionString.get().c_str(),
+			       movement.destinationConnectionString.get().c_str(),
+			       std::to_string(static_cast<int>(movement.movementState.get())).c_str());
 		}
 	} catch (Error& e) {
 		if (e.code() == error_code_actor_cancelled)

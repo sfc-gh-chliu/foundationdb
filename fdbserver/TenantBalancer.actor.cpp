@@ -30,6 +30,7 @@
 #include "flow/ITrace.h"
 #include "flow/Trace.h"
 #include "fdbclient/StatusClient.h"
+#include <cfloat>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -899,10 +900,7 @@ ACTOR Future<std::vector<TenantMovementInfo>> fetchDBMove(TenantBalancer* self, 
 			tenantMovementInfo.databaseBackupStatus = prefixToDRInfo[prefix.toString()].second;
 			// TODO assign databaseTimingDelay
 			tenantMovementInfo.switchVersion = record.switchVersion;
-			auto errorMessageOptional = record.getErrorMessage();
-			if (errorMessageOptional.present()) {
-				tenantMovementInfo.errorMessage = errorMessageOptional.get();
-			}
+			tenantMovementInfo.errorMessage = record.getErrorMessage();
 		}
 	} catch (Error& e) {
 		if (e.code() == error_code_actor_cancelled)
@@ -918,13 +916,14 @@ void filterActiveMove(const std::vector<TenantMovementInfo>& originStatus,
                       Optional<std::string> peerDatabaseConnectionStringFilter) {
 	for (const auto& status : originStatus) {
 		Key localPrefix =
-		    (status.movementLocation == MovementLocation::SOURCE ? status.sourcePrefix : status.destPrefix);
+		    (status.movementLocation == MovementLocation::SOURCE ? status.sourcePrefix : status.destPrefix).get();
 		if (prefixFilter.present() && prefixFilter.get() != localPrefix) {
 			continue;
 		}
-		const std::string& remoteDatabaseConnectionString = status.movementLocation == MovementLocation::SOURCE
-		                                                        ? status.destinationConnectionString
-		                                                        : status.sourceConnectionString;
+		const std::string& remoteDatabaseConnectionString =
+		    (status.movementLocation == MovementLocation::SOURCE ? status.destinationConnectionString
+		                                                         : status.sourceConnectionString)
+		        .get();
 		if (peerDatabaseConnectionStringFilter.present() &&
 		    peerDatabaseConnectionStringFilter.get() != remoteDatabaseConnectionString) {
 			continue;
@@ -1049,7 +1048,7 @@ ACTOR Future<Void> finishSourceMovement(TenantBalancer* self, FinishSourceMoveme
 		if (targetMovementInfo.databaseBackupStatus != "is differential") {
 			throw movement_not_ready_for_operation();
 		}
-		if (targetMovementInfo.mutationLag > req.maxLagSeconds) {
+		if (targetMovementInfo.mutationLag.orDefault(DBL_MAX) > req.maxLagSeconds) {
 			TraceEvent(SevDebug, "TenantBalancerLagCheckFailed", self->tbi.id())
 			    .detail("MaxLagSeconds", req.maxLagSeconds)
 			    .detail("CurrentLagSeconds", targetMovementInfo.mutationLag);

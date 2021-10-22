@@ -193,22 +193,22 @@ struct ReceiveTenantFromClusterRequest {
 struct TenantMovementInfo {
 	constexpr static FileIdentifier file_identifier = 16510400;
 
-	UID movementId;
-	MovementLocation movementLocation;
-	std::string sourceConnectionString;
-	std::string destinationConnectionString;
-	KeyRef sourcePrefix;
-	KeyRef destPrefix;
-	bool isSourceLocked; // Whether the prefix is locked on the source
-	bool isDestinationLocked; // Whether the prefix is locked on the destination
-	MovementState movementState;
-	double mutationLag; // The number of seconds of lag between the current mutation on the source and the mutations
-	                    // being applied to the destination
-	int64_t databaseTimingDelay; // The number of versions that the destination cluster is behind the source cluster,
-	                             // converted to seconds
-	Version switchVersion;
-	std::string errorMessage;
-	std::string databaseBackupStatus; // Status of the DR
+	Optional<UID> movementId;
+	Optional<MovementLocation> movementLocation;
+	Optional<std::string> sourceConnectionString;
+	Optional<std::string> destinationConnectionString;
+	Optional<KeyRef> sourcePrefix;
+	Optional<KeyRef> destPrefix;
+	Optional<bool> isSourceLocked; // Whether the prefix is locked on the source
+	Optional<bool> isDestinationLocked; // Whether the prefix is locked on the destination
+	Optional<MovementState> movementState;
+	Optional<double> mutationLag; // The number of seconds of lag between the current mutation on the source and the
+	                              // mutations being applied to the destination
+	Optional<int64_t> databaseTimingDelay; // The number of versions that the destination cluster is behind the source
+	                                       // cluster, converted to seconds
+	Optional<Version> switchVersion;
+	Optional<std::string> errorMessage;
+	Optional<std::string> databaseBackupStatus; // Status of the DR
 
 	template <class Ar>
 	void serialize(Ar& ar) {
