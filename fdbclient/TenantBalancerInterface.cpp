@@ -20,6 +20,8 @@
 
 #include "fdbclient/TenantBalancerInterface.h"
 #include "flow/actorcompiler.h" // This must be the last #include.
+#include <string>
+#include <unordered_map>
 
 std::string TenantBalancerInterface::movementStateToString(MovementState movementState) {
 	switch (movementState) {
@@ -51,89 +53,28 @@ std::string TenantBalancerInterface::movementLocationToString(MovementLocation m
 	}
 }
 
-std::string TenantMovementInfo::toJson() const {
-	json_spirit::mValue statusRootValue;
-	JSONDoc statusRoot(statusRootValue);
-	if (movementId.present()) {
-		statusRoot.create("movementID") = movementId.get().toString();
+std::string TenantMovementInfo::toString() const {
+	std::unordered_map<std::string, std::string> infoMap;
+	infoMap["movementId"] = movementId.toString();
+	infoMap["peerConnectionString"] = peerConnectionString;
+	infoMap["sourcePrefix"] = sourcePrefix.toString();
+	infoMap["destinationPrefix"] = destinationPrefix.toString();
+	std::string movementInfo;
+	for (const auto& itr : infoMap) {
+		movementInfo += itr.first + " : " + itr.second + "\n";
 	}
-	if (movementLocation.present()) {
-		statusRoot.create("movementLocation") =
-		    TenantBalancerInterface::movementLocationToString(movementLocation.get());
-	}
-	if (sourceConnectionString.present()) {
-		statusRoot.create("sourceConnectionString") = sourceConnectionString.get();
-	}
-	if (destinationConnectionString.present()) {
-		statusRoot.create("destinationConnectionString") = destinationConnectionString.get();
-	}
-	if (sourcePrefix.present()) {
-		statusRoot.create("sourcePrefix") = sourcePrefix.get().toString();
-	}
-	if (destPrefix.present()) {
-		statusRoot.create("destPrefix") = destPrefix.get().toString();
-	}
-	if (isSourceLocked.present()) {
-		statusRoot.create("isSourceLocked") = isSourceLocked.get();
-	}
-	if (isDestinationLocked.present()) {
-		statusRoot.create("isDestinationLocked") = isDestinationLocked.get();
-	}
-	if (movementState.present()) {
-		statusRoot.create("movementState") = TenantBalancerInterface::movementStateToString(movementState.get());
-	}
-	if (mutationLag.present()) {
-		statusRoot.create("mutationLag") = mutationLag.get();
-	}
-	if (databaseTimingDelay.present()) {
-		statusRoot.create("databaseTimingDelay") = databaseTimingDelay.get();
-	}
-	if (switchVersion.present()) {
-		statusRoot.create("switchVersion") = switchVersion.get();
-	}
-	if (errorMessage.present()) {
-		statusRoot.create("errorMessage") = errorMessage.get();
-	}
-	if (databaseBackupStatus.present()) {
-		statusRoot.create("databaseBackupStatus") = databaseBackupStatus.get();
-	}
-	return json_spirit::write_string(statusRootValue);
+	return movementInfo;
 }
 
-std::unordered_map<std::string, std::string> TenantMovementInfo::getStatusInfoMap() const {
+std::string TenantMovementStatus::toString() const {
 	std::unordered_map<std::string, std::string> statusInfoMap;
-	if (movementId.present()) {
-		statusInfoMap["movementID"] = movementId.get().toString();
-	}
-	if (movementLocation.present()) {
-		statusInfoMap["movementLocation"] = TenantBalancerInterface::movementLocationToString(movementLocation.get());
-	}
-	if (sourceConnectionString.present()) {
-		statusInfoMap["sourceConnectionString"] = sourceConnectionString.get();
-	}
-	if (destinationConnectionString.present()) {
-		statusInfoMap["destinationConnectionString"] = destinationConnectionString.get();
-	}
-	if (sourcePrefix.present()) {
-		statusInfoMap["sourcePrefix"] = sourcePrefix.get().toString();
-	}
-	if (destPrefix.present()) {
-		statusInfoMap["destPrefix"] = destPrefix.get().toString();
-	}
-	if (isSourceLocked.present()) {
-		statusInfoMap["isSourceLocked"] = std::to_string(isSourceLocked.get());
-	}
-	if (isDestinationLocked.present()) {
-		statusInfoMap["isDestinationLocked"] = std::to_string(isDestinationLocked.get());
-	}
-	if (movementState.present()) {
-		statusInfoMap["movementState"] = TenantBalancerInterface::movementStateToString(movementState.get());
-	}
+	statusInfoMap["isSourceLocked"] = std::to_string(isSourceLocked);
+	statusInfoMap["isDestinationLocked"] = std::to_string(isDestinationLocked);
+	statusInfoMap["movementState"] = TenantBalancerInterface::movementStateToString(movementState);
+	statusInfoMap["databaseTimingDelay"] = std::to_string(databaseTimingDelay);
+	statusInfoMap["databaseBackupStatus"] = databaseBackupStatus;
 	if (mutationLag.present()) {
 		statusInfoMap["mutationLag"] = std::to_string(mutationLag.get());
-	}
-	if (databaseTimingDelay.present()) {
-		statusInfoMap["databaseTimingDelay"] = std::to_string(databaseTimingDelay.get());
 	}
 	if (switchVersion.present()) {
 		statusInfoMap["switchVersion"] = std::to_string(switchVersion.get());
@@ -141,16 +82,37 @@ std::unordered_map<std::string, std::string> TenantMovementInfo::getStatusInfoMa
 	if (errorMessage.present()) {
 		statusInfoMap["errorMessage"] = errorMessage.get();
 	}
-	if (databaseBackupStatus.present()) {
-		statusInfoMap["databaseBackupStatus"] = databaseBackupStatus.get();
-	}
-	return statusInfoMap;
-}
-
-std::string TenantMovementInfo::toString() const {
-	std::string movementInfo;
-	for (const auto& itr : getStatusInfoMap()) {
+	std::string movementInfo = tenantMovementInfo.toString();
+	for (const auto& itr : statusInfoMap) {
 		movementInfo += itr.first + " : " + itr.second + "\n";
 	}
 	return movementInfo;
+}
+
+std::string TenantMovementStatus::toJson() const {
+	json_spirit::mValue statusRootValue;
+	JSONDoc statusRoot(statusRootValue);
+
+	// Insert tenantMoveInfo into JSON
+	statusRoot.create("movementId") = tenantMovementInfo.movementId.toString();
+	statusRoot.create("peerConnectionString") = tenantMovementInfo.peerConnectionString;
+	statusRoot.create("sourcePrefix") = tenantMovementInfo.sourcePrefix.toString();
+	statusRoot.create("destinationPrefix") = tenantMovementInfo.destinationPrefix.toString();
+
+	// Insert movement status into JSON
+	statusRoot.create("isSourceLocked") = isSourceLocked;
+	statusRoot.create("isDestinationLocked") = isDestinationLocked;
+	statusRoot.create("movementState") = TenantBalancerInterface::movementStateToString(movementState);
+	statusRoot.create("databaseTimingDelay") = databaseTimingDelay;
+	statusRoot.create("databaseBackupStatus") = databaseBackupStatus;
+	if (mutationLag.present()) {
+		statusRoot.create("mutationLag") = mutationLag.get();
+	}
+	if (switchVersion.present()) {
+		statusRoot.create("switchVersion") = switchVersion.get();
+	}
+	if (errorMessage.present()) {
+		statusRoot.create("errorMessage") = errorMessage.get();
+	}
+	return json_spirit::write_string(statusRootValue);
 }

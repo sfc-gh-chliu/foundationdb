@@ -49,7 +49,7 @@ struct TenantBalancerInterface {
 
 	RequestStream<struct GetActiveMovementsRequest> getActiveMovements;
 	// Right now we get all details from listing all movements. Do we need an individual movement status request?
-	// RequestStream<struct GetMovementStatusRequest> getMovementStatus;
+	RequestStream<struct GetMovementStatusRequest> getMovementStatus;
 
 	// Finish source and dest are two steps here. We may not want this, given that it then becomes the responsibility of
 	// the move client to handle failures. We can fix this once the tenant balancers can talk to each other.
@@ -84,6 +84,7 @@ struct TenantBalancerInterface {
 		           moveTenantToCluster,
 		           receiveTenantFromCluster,
 		           getActiveMovements,
+		           getMovementStatus,
 		           finishSourceMovement,
 		           finishDestinationMovement,
 		           abortMovement,
@@ -98,6 +99,7 @@ struct TenantBalancerInterface {
 		streams.push_back(moveTenantToCluster.getReceiver());
 		streams.push_back(receiveTenantFromCluster.getReceiver());
 		streams.push_back(getActiveMovements.getReceiver());
+		streams.push_back(getMovementStatus.getReceiver());
 		streams.push_back(finishSourceMovement.getReceiver());
 		streams.push_back(finishDestinationMovement.getReceiver());
 		streams.push_back(abortMovement.getReceiver());
@@ -193,32 +195,46 @@ struct ReceiveTenantFromClusterRequest {
 struct TenantMovementInfo {
 	constexpr static FileIdentifier file_identifier = 16510400;
 
-	Optional<UID> movementId;
-	Optional<MovementLocation> movementLocation;
-	Optional<std::string> sourceConnectionString;
-	Optional<std::string> destinationConnectionString;
-	Optional<KeyRef> sourcePrefix;
-	Optional<KeyRef> destPrefix;
-	Optional<bool> isSourceLocked; // Whether the prefix is locked on the source
-	Optional<bool> isDestinationLocked; // Whether the prefix is locked on the destination
-	Optional<MovementState> movementState;
+	UID movementId;
+	std::string peerConnectionString;
+	KeyRef sourcePrefix;
+	KeyRef destinationPrefix;
+
+	TenantMovementInfo() {}
+	TenantMovementInfo(UID movementId, std::string peerConnectionString, KeyRef sourcePrefix, KeyRef destinationPrefix)
+	  : movementId(movementId), peerConnectionString(peerConnectionString), sourcePrefix(sourcePrefix),
+	    destinationPrefix(destinationPrefix) {}
+
+	std::string toString() const;
+
+	template <class Ar>
+	void serialize(Ar& ar) {
+		serializer(ar, movementId, peerConnectionString, sourcePrefix, destinationPrefix);
+	}
+};
+
+struct TenantMovementStatus {
+	constexpr static FileIdentifier file_identifier = 5103586;
+
+	TenantMovementInfo tenantMovementInfo;
+	bool isSourceLocked; // Whether the prefix is locked on the source
+	bool isDestinationLocked; // Whether the prefix is locked on the destination
+	MovementState movementState;
+	int64_t databaseTimingDelay;
+	std::string databaseBackupStatus; // Status of the DR
 	Optional<double> mutationLag; // The number of seconds of lag between the current mutation on the source and the
 	                              // mutations being applied to the destination
-	Optional<int64_t> databaseTimingDelay; // The number of versions that the destination cluster is behind the source
-	                                       // cluster, converted to seconds
 	Optional<Version> switchVersion;
 	Optional<std::string> errorMessage;
-	Optional<std::string> databaseBackupStatus; // Status of the DR
+
+	TenantMovementStatus() {}
+	std::string toJson() const;
+
+	std::string toString() const;
 
 	template <class Ar>
 	void serialize(Ar& ar) {
 		serializer(ar,
-		           movementId,
-		           movementLocation,
-		           sourceConnectionString,
-		           destinationConnectionString,
-		           sourcePrefix,
-		           destPrefix,
 		           isSourceLocked,
 		           isDestinationLocked,
 		           movementState,
@@ -228,12 +244,6 @@ struct TenantMovementInfo {
 		           errorMessage,
 		           databaseBackupStatus);
 	}
-
-	std::unordered_map<std::string, std::string> getStatusInfoMap() const;
-
-	std::string toJson() const;
-
-	std::string toString() const;
 };
 
 struct GetActiveMovementsReply {
@@ -266,6 +276,45 @@ struct GetActiveMovementsRequest {
 	GetActiveMovementsRequest(Optional<Key> prefixFilter,
 	                          Optional<std::string> peerDatabaseConnectionStringFilter,
 	                          Optional<MovementLocation> locationFilter)
+	  : prefixFilter(prefixFilter), peerDatabaseConnectionStringFilter(peerDatabaseConnectionStringFilter),
+	    locationFilter(locationFilter) {}
+
+	template <class Ar>
+	void serialize(Ar& ar) {
+		serializer(ar, prefixFilter, peerDatabaseConnectionStringFilter, locationFilter, reply);
+	}
+};
+
+struct GetMovementStatusReply {
+	constexpr static FileIdentifier file_identifier = 2320458;
+	Arena arena;
+
+	TenantMovementStatus targetStatus;
+
+	GetMovementStatusReply() {}
+
+	template <class Ar>
+	void serialize(Ar& ar) {
+		serializer(ar, targetStatus, arena);
+	}
+};
+
+struct GetMovementStatusRequest {
+	constexpr static FileIdentifier file_identifier = 11980148;
+	Arena arena;
+
+	// Filter criteria
+	Optional<Key> prefixFilter;
+	Optional<std::string> peerDatabaseConnectionStringFilter;
+	Optional<MovementLocation> locationFilter;
+
+	// TODO: optional source and dest cluster selectors
+	ReplyPromise<GetMovementStatusReply> reply;
+
+	GetMovementStatusRequest() {}
+	GetMovementStatusRequest(Optional<Key> prefixFilter,
+	                         Optional<std::string> peerDatabaseConnectionStringFilter,
+	                         Optional<MovementLocation> locationFilter)
 	  : prefixFilter(prefixFilter), peerDatabaseConnectionStringFilter(peerDatabaseConnectionStringFilter),
 	    locationFilter(locationFilter) {}
 
