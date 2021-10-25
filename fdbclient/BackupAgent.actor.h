@@ -433,7 +433,6 @@ struct DatabaseBackupStatus {
 		if (paused.present()) {
 			statusText += format("\nAll DR agents have been paused.\n");
 		}
-		statusText += "source prefix: " + srcPrefix.toString() + "\ndestination prefix: " + destPrefix.toString();
 		if (errorName != nullptr) {
 			statusText += format("\nWARNING: Could not fetch full DR status: %s\n", errorName);
 		}
