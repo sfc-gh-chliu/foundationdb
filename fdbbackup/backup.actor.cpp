@@ -1026,7 +1026,7 @@ CSimpleOpt::SOption g_rgDBMoveAbortOptions[] = {
 	{ OPT_DEVHELP, "--dev-help", SO_NONE },
 	{ OPT_KNOB, "--knob_", SO_REQ_SEP },
 	{ OPT_PREFIX, "--prefix", SO_REQ_SEP },
-	{ OPT_PREFIX, "--destination_prefix", SO_REQ_SEP },
+	{ OPT_DESTINATION_PREFIX, "--destination_prefix", SO_REQ_SEP },
 #ifndef TLS_DISABLED
 	TLS_OPTION_FLAGS
 #endif
@@ -1058,34 +1058,6 @@ CSimpleOpt::SOption g_rgDBMoveCleanupOptions[] = {
 	{ OPT_PREFIX, "--prefix", SO_REQ_SEP },
 	{ OPT_UNLOCK_TENANT, "--unlock", SO_NONE },
 	{ OPT_ERASE_TENANT, "--erase", SO_NONE },
-#ifndef TLS_DISABLED
-	TLS_OPTION_FLAGS
-#endif
-	    SO_END_OF_OPTIONS
-};
-
-CSimpleOpt::SOption g_rgDBMoveClearSrcOptions[] = {
-#ifdef _WIN32
-	{ OPT_PARENTPID, "--parentpid", SO_REQ_SEP },
-#endif
-	{ OPT_SOURCE_CLUSTER, "-s", SO_REQ_SEP },
-	{ OPT_SOURCE_CLUSTER, "--source", SO_REQ_SEP },
-	{ OPT_TAGNAME, "-t", SO_REQ_SEP },
-	{ OPT_TRACE, "--log", SO_NONE },
-	{ OPT_TRACE_DIR, "--logdir", SO_REQ_SEP },
-	{ OPT_TRACE_FORMAT, "--trace_format", SO_REQ_SEP },
-	{ OPT_TRACE_LOG_GROUP, "--loggroup", SO_REQ_SEP },
-	{ OPT_QUIET, "-q", SO_NONE },
-	{ OPT_QUIET, "--quiet", SO_NONE },
-	{ OPT_CRASHONERROR, "--crash", SO_NONE },
-	{ OPT_MEMLIMIT, "-m", SO_REQ_SEP },
-	{ OPT_MEMLIMIT, "--memory", SO_REQ_SEP },
-	{ OPT_HELP, "-?", SO_NONE },
-	{ OPT_HELP, "-h", SO_NONE },
-	{ OPT_HELP, "--help", SO_NONE },
-	{ OPT_DEVHELP, "--dev-help", SO_NONE },
-	{ OPT_KNOB, "--knob_", SO_REQ_SEP },
-	{ OPT_PREFIX, "--prefix", SO_REQ_SEP },
 #ifndef TLS_DISABLED
 	TLS_OPTION_FLAGS
 #endif
@@ -2352,6 +2324,27 @@ ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> ma
 	return Void();
 }
 
+ACTOR Future<Void> abortDBMove(Database database, Key prefix, MovementLocation location) {
+	state AbortMovementRequest abortMovementRequest(prefix, location);
+	state Future<ErrorOr<AbortMovementReply>> abortMovementReply = Never();
+	state Future<Void> initialize = Void();
+	loop choose {
+		when(ErrorOr<AbortMovementReply> reply = wait(abortMovementReply)) {
+			if (reply.isError()) {
+				throw reply.getError();
+			}
+			break;
+		}
+		when(wait(database->onTenantBalancerChanged() || initialize)) {
+			initialize = Never();
+			abortMovementReply =
+			    database->getTenantBalancer().present()
+			        ? database->getTenantBalancer().get().abortMovement.tryGetReply(abortMovementRequest)
+			        : Never();
+		}
+	}
+}
+
 ACTOR Future<Void> abortDBMove(Optional<Database> src,
                                Optional<Database> dest,
                                Optional<Key> sourcePrefix,
@@ -2359,27 +2352,11 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 	ASSERT(src.present() || dest.present());
 
 	try {
-		bool isSource = src.present();
-		Key targetPrefix = isSource ? sourcePrefix.get() : destinationPrefix.get();
-		state AbortMovementRequest abortMovementRequest(targetPrefix,
-		                                                isSource ? MovementLocation::SOURCE : MovementLocation::DEST);
-		state Future<ErrorOr<AbortMovementReply>> abortMovementReply = Never();
-		state Future<Void> initialize = Void();
-		state Database targetDatabase = (isSource ? src : dest).get();
-		loop choose {
-			when(ErrorOr<AbortMovementReply> reply = wait(abortMovementReply)) {
-				if (reply.isError()) {
-					throw reply.getError();
-				}
-				break;
-			}
-			when(wait(targetDatabase->onTenantBalancerChanged() || initialize)) {
-				initialize = Never();
-				abortMovementReply =
-				    targetDatabase->getTenantBalancer().present()
-				        ? targetDatabase->getTenantBalancer().get().abortMovement.tryGetReply(abortMovementRequest)
-				        : Never();
-			}
+		if (src.present() && sourcePrefix.present()) {
+			abortDBMove(src.get(), sourcePrefix.get(), MovementLocation::SOURCE);
+		}
+		if (dest.present() && destinationPrefix.present()) {
+			abortDBMove(dest.get(), destinationPrefix.get(), MovementLocation::DEST);
 		}
 		printf("The data movement was successfully aborted.\n");
 	} catch (Error& e) {
@@ -4899,7 +4876,7 @@ int main(int argc, char* argv[]) {
 				break;
 			case DBMoveType::STATUS: {
 				bool canInitCluster = initCluster();
-				bool canInitSourceCluster = initSourceCluster(true);
+				bool canInitSourceCluster = initSourceCluster(true, true);
 				if (!canInitCluster && !canInitSourceCluster) {
 					fprintf(stderr, "ERROR: -s or -d is required\n");
 					return FDB_EXIT_ERROR;
@@ -4940,32 +4917,26 @@ int main(int argc, char* argv[]) {
 				break;
 			case DBMoveType::ABORT: {
 				bool canInitCluster = initCluster();
-				bool canInitSourceCluster = initSourceCluster(true);
+				bool canInitSourceCluster = initSourceCluster(true, true);
 				if (!canInitCluster && !canInitSourceCluster) {
-					fprintf(stderr, "ERROR: -s or -d is required\n");
+					fprintf(stderr, "ERROR: -s and/or -d are required\n");
 					return FDB_EXIT_ERROR;
 				}
-				if (canInitCluster && canInitSourceCluster) {
-					fprintf(stderr, "ERROR: -s and -d cannot be provided together\n");
+				if (canInitSourceCluster && !prefix.present()) {
+					fprintf(stderr, "ERROR: --prefix is required if -s is specified\n");
 					return FDB_EXIT_ERROR;
 				}
-				if (canInitSourceCluster) {
-					// Abort movement from source cluster
-					if (!prefix.present()) {
-						fprintf(stderr, "ERROR: --prefix is required\n");
+				if (canInitCluster) {
+					if (!prefix.present() && !destinationPrefix.present()) {
+						fprintf(stderr, "ERROR: --prefix or --destination_prefix is required if -d is specified\n");
 						return FDB_EXIT_ERROR;
 					}
-				} else if (!destinationPrefix.present()) {
-					// Abort from destination cluster
-					fprintf(stderr, "ERROR: --destination_prefix is required\n");
-					return FDB_EXIT_ERROR;
+					if (!destinationPrefix.present()) {
+						destinationPrefix = prefix.get();
+					}
 				}
 
-				// TODO if both clusters are able to be initialized, what else should we consider?
-				f = stopAfter(abortDBMove(canInitSourceCluster ? sourceDb : Optional<Database>(),
-				                          canInitCluster ? db : Optional<Database>(),
-				                          canInitSourceCluster ? Key(prefix.get()) : Optional<Key>(),
-				                          canInitCluster ? Key(destinationPrefix.get()) : Optional<Key>()));
+				f = stopAfter(abortDBMove(sourceDb, db, prefix, destinationPrefix));
 				break;
 			}
 			case DBMoveType::CLEAN:
@@ -4993,7 +4964,7 @@ int main(int argc, char* argv[]) {
 				break;
 			case DBMoveType::LIST: {
 				bool canInitCluster = initCluster();
-				bool canInitSourceCluster = initSourceCluster(true);
+				bool canInitSourceCluster = initSourceCluster(true, true);
 				if (!canInitCluster && !canInitSourceCluster) {
 					fprintf(stderr, "ERROR: -s and/or -d are required\n");
 					return FDB_EXIT_ERROR;
