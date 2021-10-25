@@ -1026,7 +1026,7 @@ CSimpleOpt::SOption g_rgDBMoveAbortOptions[] = {
 	{ OPT_DEVHELP, "--dev-help", SO_NONE },
 	{ OPT_KNOB, "--knob_", SO_REQ_SEP },
 	{ OPT_PREFIX, "--prefix", SO_REQ_SEP },
-	{ OPT_PREFIX, "--destination_prefix", SO_REQ_SEP },
+	{ OPT_DESTINATION_PREFIX, "--destination_prefix", SO_REQ_SEP },
 #ifndef TLS_DISABLED
 	TLS_OPTION_FLAGS
 #endif
@@ -1058,34 +1058,6 @@ CSimpleOpt::SOption g_rgDBMoveCleanupOptions[] = {
 	{ OPT_PREFIX, "--prefix", SO_REQ_SEP },
 	{ OPT_UNLOCK_TENANT, "--unlock", SO_NONE },
 	{ OPT_ERASE_TENANT, "--erase", SO_NONE },
-#ifndef TLS_DISABLED
-	TLS_OPTION_FLAGS
-#endif
-	    SO_END_OF_OPTIONS
-};
-
-CSimpleOpt::SOption g_rgDBMoveClearSrcOptions[] = {
-#ifdef _WIN32
-	{ OPT_PARENTPID, "--parentpid", SO_REQ_SEP },
-#endif
-	{ OPT_SOURCE_CLUSTER, "-s", SO_REQ_SEP },
-	{ OPT_SOURCE_CLUSTER, "--source", SO_REQ_SEP },
-	{ OPT_TAGNAME, "-t", SO_REQ_SEP },
-	{ OPT_TRACE, "--log", SO_NONE },
-	{ OPT_TRACE_DIR, "--logdir", SO_REQ_SEP },
-	{ OPT_TRACE_FORMAT, "--trace_format", SO_REQ_SEP },
-	{ OPT_TRACE_LOG_GROUP, "--loggroup", SO_REQ_SEP },
-	{ OPT_QUIET, "-q", SO_NONE },
-	{ OPT_QUIET, "--quiet", SO_NONE },
-	{ OPT_CRASHONERROR, "--crash", SO_NONE },
-	{ OPT_MEMLIMIT, "-m", SO_REQ_SEP },
-	{ OPT_MEMLIMIT, "--memory", SO_REQ_SEP },
-	{ OPT_HELP, "-?", SO_NONE },
-	{ OPT_HELP, "-h", SO_NONE },
-	{ OPT_HELP, "--help", SO_NONE },
-	{ OPT_DEVHELP, "--dev-help", SO_NONE },
-	{ OPT_KNOB, "--knob_", SO_REQ_SEP },
-	{ OPT_PREFIX, "--prefix", SO_REQ_SEP },
 #ifndef TLS_DISABLED
 	TLS_OPTION_FLAGS
 #endif
@@ -4930,30 +4902,29 @@ int main(int argc, char* argv[]) {
 				f = stopAfter(finishDBMove(sourceDb, Key(prefix.get()), maxLagSec));
 				break;
 			case DBMoveType::ABORT: {
-				bool canInitCluster = initCluster();
-				bool canInitSourceCluster = initSourceCluster(true);
-				if (!canInitCluster && !canInitSourceCluster) {
-					fprintf(stderr, "ERROR: -s or -d is required\n");
+				if (!prefix.present() && !destinationPrefix.present()) {
+					fprintf(stderr, "ERROR: --prefix or --destination_prefix is required\n");
 					return FDB_EXIT_ERROR;
 				}
-				if (canInitCluster && canInitSourceCluster) {
-					fprintf(stderr, "ERROR: -s and -d cannot be provided together\n");
+				if (prefix.present() && destinationPrefix.present()) {
+					fprintf(stderr, "ERROR: --prefix and --destination_prefix cannot be provided together\n");
 					return FDB_EXIT_ERROR;
 				}
-				if (canInitSourceCluster) {
+				if (prefix.present()) {
 					// Abort movement from source cluster
-					if (!prefix.present()) {
-						fprintf(stderr, "ERROR: --prefix is required\n");
+					if (!initSourceCluster(true)) {
+						fprintf(stderr, "ERROR: -s is required and must be valid\n");
 						return FDB_EXIT_ERROR;
 					}
-				} else if (!destinationPrefix.present()) {
+				} else if (!initCluster()) {
 					// Abort from destination cluster
-					fprintf(stderr, "ERROR: --destination_prefix is required\n");
+					fprintf(stderr, "ERROR: -d is required and must be valid\n");
 					return FDB_EXIT_ERROR;
 				}
-				f = stopAfter(abortDBMove(canInitSourceCluster ? sourceDb : db,
-				                          Key(canInitSourceCluster ? prefix.get() : destinationPrefix.get()),
-				                          canInitSourceCluster ? MovementLocation::SOURCE : MovementLocation::DEST));
+
+				f = stopAfter(abortDBMove(prefix.present() ? sourceDb : db,
+				                          Key(prefix.present() ? prefix.get() : destinationPrefix.get()),
+				                          prefix.present() ? MovementLocation::SOURCE : MovementLocation::DEST));
 				break;
 			}
 			case DBMoveType::CLEAN:
