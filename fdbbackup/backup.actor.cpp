@@ -2325,24 +2325,38 @@ ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> ma
 }
 
 ACTOR Future<Void> abortDBMove(Database database, Key prefix, MovementLocation location) {
+	state AbortMovementRequest abortMovementRequest(prefix, location);
+	state Future<ErrorOr<AbortMovementReply>> abortMovementReply = Never();
+	state Future<Void> initialize = Void();
+	loop choose {
+		when(ErrorOr<AbortMovementReply> reply = wait(abortMovementReply)) {
+			if (reply.isError()) {
+				throw reply.getError();
+			}
+			break;
+		}
+		when(wait(database->onTenantBalancerChanged() || initialize)) {
+			initialize = Never();
+			abortMovementReply =
+			    database->getTenantBalancer().present()
+			        ? database->getTenantBalancer().get().abortMovement.tryGetReply(abortMovementRequest)
+			        : Never();
+		}
+	}
+}
+
+ACTOR Future<Void> abortDBMove(Optional<Database> src,
+                               Optional<Database> dest,
+                               Optional<Key> sourcePrefix,
+                               Optional<Key> destinationPrefix) {
+	ASSERT(src.present() || dest.present());
+
 	try {
-		state AbortMovementRequest abortMovementRequest(prefix, location);
-		state Future<ErrorOr<AbortMovementReply>> abortMovementReply = Never();
-		state Future<Void> initialize = Void();
-		loop choose {
-			when(ErrorOr<AbortMovementReply> reply = wait(abortMovementReply)) {
-				if (reply.isError()) {
-					throw reply.getError();
-				}
-				break;
-			}
-			when(wait(database->onTenantBalancerChanged() || initialize)) {
-				initialize = Never();
-				abortMovementReply =
-				    database->getTenantBalancer().present()
-				        ? database->getTenantBalancer().get().abortMovement.tryGetReply(abortMovementRequest)
-				        : Never();
-			}
+		if (src.present() && sourcePrefix.present()) {
+			abortDBMove(src.get(), sourcePrefix.get(), MovementLocation::SOURCE);
+		}
+		if (dest.present() && destinationPrefix.present()) {
+			abortDBMove(dest.get(), destinationPrefix.get(), MovementLocation::DEST);
 		}
 		printf("The data movement was successfully aborted.\n");
 	} catch (Error& e) {
@@ -4902,29 +4916,27 @@ int main(int argc, char* argv[]) {
 				f = stopAfter(finishDBMove(sourceDb, Key(prefix.get()), maxLagSec));
 				break;
 			case DBMoveType::ABORT: {
-				if (!prefix.present() && !destinationPrefix.present()) {
-					fprintf(stderr, "ERROR: --prefix or --destination_prefix is required\n");
+				bool canInitCluster = initCluster();
+				bool canInitSourceCluster = initSourceCluster(true, true);
+				if (!canInitCluster && !canInitSourceCluster) {
+					fprintf(stderr, "ERROR: -s and/or -d are required\n");
 					return FDB_EXIT_ERROR;
 				}
-				if (prefix.present() && destinationPrefix.present()) {
-					fprintf(stderr, "ERROR: --prefix and --destination_prefix cannot be provided together\n");
+				if (canInitSourceCluster && !prefix.present()) {
+					fprintf(stderr, "ERROR: --prefix is required if -s is specified\n");
 					return FDB_EXIT_ERROR;
 				}
-				if (prefix.present()) {
-					// Abort movement from source cluster
-					if (!initSourceCluster(true)) {
-						fprintf(stderr, "ERROR: -s is required and must be valid\n");
+				if (canInitCluster) {
+					if (!prefix.present() && !destinationPrefix.present()) {
+						fprintf(stderr, "ERROR: --prefix or --destination_prefix is required if -d is specified\n");
 						return FDB_EXIT_ERROR;
 					}
-				} else if (!initCluster()) {
-					// Abort from destination cluster
-					fprintf(stderr, "ERROR: -d is required and must be valid\n");
-					return FDB_EXIT_ERROR;
+					if (!destinationPrefix.present()) {
+						destinationPrefix = prefix.get();
+					}
 				}
 
-				f = stopAfter(abortDBMove(prefix.present() ? sourceDb : db,
-				                          Key(prefix.present() ? prefix.get() : destinationPrefix.get()),
-				                          prefix.present() ? MovementLocation::SOURCE : MovementLocation::DEST));
+				f = stopAfter(abortDBMove(sourceDb, db, prefix, destinationPrefix));
 				break;
 			}
 			case DBMoveType::CLEAN:
