@@ -71,7 +71,7 @@ std::string TenantMovementStatus::toString() const {
 	std::unordered_map<std::string, std::string> statusInfoMap;
 	statusInfoMap["isSourceLocked"] = isSourceLocked ? "true" : "false";
 	statusInfoMap["isDestinationLocked"] = isDestinationLocked ? "true" : "false";
-	statusInfoMap["databaseTimingDelay"] = std::to_string(databaseTimingDelay);
+	statusInfoMap["databaseVersionLag"] = std::to_string(databaseVersionLag);
 	if (mutationLag.present()) {
 		statusInfoMap["mutationLag"] = std::to_string(mutationLag.get());
 	}
@@ -103,7 +103,7 @@ std::string TenantMovementStatus::toJson() const {
 	// Insert movement status into JSON
 	statusRoot.create("isSourceLocked") = isSourceLocked;
 	statusRoot.create("isDestinationLocked") = isDestinationLocked;
-	statusRoot.create("databaseTimingDelay") = databaseTimingDelay;
+	statusRoot.create("databaseVersionLag") = databaseVersionLag;
 	if (mutationLag.present()) {
 		statusRoot.create("mutationLag") = mutationLag.get();
 	}

@@ -1026,15 +1026,40 @@ ACTOR Future<Void> getActiveMovements(TenantBalancer* self, GetActiveMovementsRe
 	return Void();
 }
 
+ACTOR Future<Version> getDatabaseVersion(Database db) {
+	state Reference<ReadYourWritesTransaction> tr = makeReference<ReadYourWritesTransaction>(db);
+	loop {
+		try {
+			tr->setOption(FDBTransactionOptions::PRIORITY_SYSTEM_IMMEDIATE);
+			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
+			Version v = wait(tr->getReadVersion());
+			return v;
+		} catch (Error& e) {
+			TraceEvent(SevDebug, "TenantBalancerGetDatabaseVersionError").error(e);
+			wait(tr->onError(e));
+		}
+	}
+}
+
 ACTOR Future<TenantMovementStatus> getStatusAndUpdateMovementRecord(TenantBalancer* self, MovementRecord* record) {
 	state DatabaseBackupStatus drStatus;
+	state Version sourceVersion;
+	state Version destVersion;
 	if (record->getMovementLocation() == MovementLocation::SOURCE) {
 		DatabaseBackupStatus s = wait(self->agent.getStatusData(record->getPeerDatabase(), 1, record->getTagName()));
 		drStatus = s;
+		Version dv = wait(getDatabaseVersion(record->getPeerDatabase()));
+		destVersion = dv;
+		Version sv = wait(getDatabaseVersion(self->db));
+		sourceVersion = sv;
 	} else {
 		state DatabaseBackupAgent sourceAgent(record->getPeerDatabase());
 		DatabaseBackupStatus s = wait(sourceAgent.getStatusData(self->db, 1, record->getTagName()));
 		drStatus = s;
+		Version dv = wait(getDatabaseVersion(self->db));
+		destVersion = dv;
+		Version sv = wait(getDatabaseVersion(record->getPeerDatabase()));
+		sourceVersion = sv;
 	}
 
 	if (updateMovementRecordWithDrState(self, record, &drStatus)) {
@@ -1053,8 +1078,7 @@ ACTOR Future<TenantMovementStatus> getStatusAndUpdateMovementRecord(TenantBalanc
 	status.isSourceLocked = false;
 	status.isDestinationLocked = false;
 
-	// TODO assign databaseTimingDelay
-	status.databaseTimingDelay = 0;
+	status.databaseVersionLag = std::max<double>(sourceVersion - destVersion, 0) / CLIENT_KNOBS->CORE_VERSIONSPERSECOND;
 	if (drStatus.secondsBehind != -1) {
 		status.mutationLag = drStatus.secondsBehind;
 	}

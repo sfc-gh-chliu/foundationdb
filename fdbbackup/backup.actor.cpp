@@ -2333,7 +2333,7 @@ ACTOR Future<Void> abortDBMove(Database database, Key prefix, MovementLocation l
 			if (reply.isError()) {
 				throw reply.getError();
 			}
-			break;
+			return Void();
 		}
 		when(wait(database->onTenantBalancerChanged() || initialize)) {
 			initialize = Never();
@@ -2353,10 +2353,10 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 
 	try {
 		if (src.present() && sourcePrefix.present()) {
-			abortDBMove(src.get(), sourcePrefix.get(), MovementLocation::SOURCE);
+			wait(abortDBMove(src.get(), sourcePrefix.get(), MovementLocation::SOURCE));
 		}
 		if (dest.present() && destinationPrefix.present()) {
-			abortDBMove(dest.get(), destinationPrefix.get(), MovementLocation::DEST);
+			wait(abortDBMove(dest.get(), destinationPrefix.get(), MovementLocation::DEST));
 		}
 		printf("The data movement was successfully aborted.\n");
 	} catch (Error& e) {
@@ -4936,7 +4936,10 @@ int main(int argc, char* argv[]) {
 					}
 				}
 
-				f = stopAfter(abortDBMove(sourceDb, db, prefix, destinationPrefix));
+				f = stopAfter(abortDBMove(sourceDb,
+				                          db,
+				                          prefix.map<Key>([](auto s) { return Key(s); }),
+				                          destinationPrefix.map<Key>([](auto s) { return Key(s); })));
 				break;
 			}
 			case DBMoveType::CLEAN:
