@@ -2352,20 +2352,11 @@ ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> ma
 	return Void();
 }
 
-ACTOR Future<Void> abortDBMove(Optional<Database> src,
-                               Optional<Database> dest,
-                               Optional<Key> sourcePrefix,
-                               Optional<Key> destinationPrefix) {
-	ASSERT(src.present() || dest.present());
-
+ACTOR Future<Void> abortDBMove(Database database, Key prefix, MovementLocation location) {
 	try {
-		bool isSource = src.present();
-		Key targetPrefix = isSource ? sourcePrefix.get() : destinationPrefix.get();
-		state AbortMovementRequest abortMovementRequest(targetPrefix,
-		                                                isSource ? MovementLocation::SOURCE : MovementLocation::DEST);
+		state AbortMovementRequest abortMovementRequest(prefix, location);
 		state Future<ErrorOr<AbortMovementReply>> abortMovementReply = Never();
 		state Future<Void> initialize = Void();
-		state Database targetDatabase = (isSource ? src : dest).get();
 		loop choose {
 			when(ErrorOr<AbortMovementReply> reply = wait(abortMovementReply)) {
 				if (reply.isError()) {
@@ -2373,11 +2364,11 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 				}
 				break;
 			}
-			when(wait(targetDatabase->onTenantBalancerChanged() || initialize)) {
+			when(wait(database->onTenantBalancerChanged() || initialize)) {
 				initialize = Never();
 				abortMovementReply =
-				    targetDatabase->getTenantBalancer().present()
-				        ? targetDatabase->getTenantBalancer().get().abortMovement.tryGetReply(abortMovementRequest)
+				    database->getTenantBalancer().present()
+				        ? database->getTenantBalancer().get().abortMovement.tryGetReply(abortMovementRequest)
 				        : Never();
 			}
 		}
@@ -4960,12 +4951,9 @@ int main(int argc, char* argv[]) {
 					fprintf(stderr, "ERROR: --destination_prefix is required\n");
 					return FDB_EXIT_ERROR;
 				}
-
-				// TODO if both clusters are able to be initialized, what else should we consider?
-				f = stopAfter(abortDBMove(canInitSourceCluster ? sourceDb : Optional<Database>(),
-				                          canInitCluster ? db : Optional<Database>(),
-				                          canInitSourceCluster ? Key(prefix.get()) : Optional<Key>(),
-				                          canInitCluster ? Key(destinationPrefix.get()) : Optional<Key>()));
+				f = stopAfter(abortDBMove(canInitSourceCluster ? sourceDb : db,
+				                          Key(canInitSourceCluster ? prefix.get() : destinationPrefix.get()),
+				                          canInitSourceCluster ? MovementLocation::SOURCE : MovementLocation::DEST));
 				break;
 			}
 			case DBMoveType::CLEAN:
