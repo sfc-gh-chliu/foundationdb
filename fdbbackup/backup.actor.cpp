@@ -4945,21 +4945,27 @@ int main(int argc, char* argv[]) {
 					fprintf(stderr, "ERROR: -s or -d is required\n");
 					return FDB_EXIT_ERROR;
 				}
-
-				if (canInitSourceCluster && !prefix.present()) {
-					fprintf(stderr, "ERROR: --prefix is required\n");
+				if (canInitCluster && canInitSourceCluster) {
+					fprintf(stderr, "ERROR: -s and -d cannot be provided together\n");
 					return FDB_EXIT_ERROR;
-				} else if (!canInitCluster && !destinationPrefix.present()) {
+				}
+				if (canInitSourceCluster) {
+					// Abort movement from source cluster
+					if (!prefix.present()) {
+						fprintf(stderr, "ERROR: --prefix is required\n");
+						return FDB_EXIT_ERROR;
+					}
+				} else if (!destinationPrefix.present()) {
+					// Abort from destination cluster
 					fprintf(stderr, "ERROR: --destination_prefix is required\n");
 					return FDB_EXIT_ERROR;
 				}
 
 				// TODO if both clusters are able to be initialized, what else should we consider?
-				f = stopAfter(
-				    abortDBMove(canInitSourceCluster ? sourceDb : Optional<Database>(),
-				                canInitCluster ? db : Optional<Database>(),
-				                canInitSourceCluster ? Optional<Key>(Key(prefix.get())) : Optional<Key>(),
-				                canInitCluster ? Optional<Key>(Key(destinationPrefix.get())) : Optional<Key>()));
+				f = stopAfter(abortDBMove(canInitSourceCluster ? sourceDb : Optional<Database>(),
+				                          canInitCluster ? db : Optional<Database>(),
+				                          canInitSourceCluster ? Key(prefix.get()) : Optional<Key>(),
+				                          canInitCluster ? Key(destinationPrefix.get()) : Optional<Key>()));
 				break;
 			}
 			case DBMoveType::CLEAN:
