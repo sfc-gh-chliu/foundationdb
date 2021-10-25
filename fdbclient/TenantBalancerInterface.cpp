@@ -69,8 +69,8 @@ std::string TenantMovementInfo::toString() const {
 
 std::string TenantMovementStatus::toString() const {
 	std::unordered_map<std::string, std::string> statusInfoMap;
-	statusInfoMap["isSourceLocked"] = std::to_string(isSourceLocked);
-	statusInfoMap["isDestinationLocked"] = std::to_string(isDestinationLocked);
+	statusInfoMap["isSourceLocked"] = isSourceLocked ? "true" : "false";
+	statusInfoMap["isDestinationLocked"] = isDestinationLocked ? "true" : "false";
 	statusInfoMap["databaseTimingDelay"] = std::to_string(databaseTimingDelay);
 	if (mutationLag.present()) {
 		statusInfoMap["mutationLag"] = std::to_string(mutationLag.get());

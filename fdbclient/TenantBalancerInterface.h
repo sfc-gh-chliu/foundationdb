@@ -241,8 +241,14 @@ struct TenantMovementStatus {
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(
-		    ar, isSourceLocked, isDestinationLocked, mutationLag, databaseTimingDelay, switchVersion, errorMessage);
+		serializer(ar,
+		           tenantMovementInfo,
+		           isSourceLocked,
+		           isDestinationLocked,
+		           databaseTimingDelay,
+		           mutationLag,
+		           switchVersion,
+		           errorMessage);
 	}
 };
 
