@@ -319,7 +319,7 @@ struct TenantBalancer {
 			                                    self->clearExternalDatabase(record->getPeerDatabaseName()));
 		}
 
-		TraceEvent(SevDebug, "ClearMovementSuccess", self->tbi.id())
+		TraceEvent(SevDebug, "TenantBalancerClearMovementSuccess", self->tbi.id())
 		    .detail("MovementId", record->getMovementId())
 		    .detail("MovementLocation",
 		            TenantBalancerInterface::movementLocationToString(record->getMovementLocation()))
@@ -553,17 +553,21 @@ Future<Void> abortPeer(TenantBalancer* self, MovementRecord const& record) {
 	    &TenantBalancerInterface::abortMovement));
 }
 
-ACTOR Future<Void> abortDr(TenantBalancer* self, MovementRecord const* record) {
-	if (record->getMovementLocation() == MovementLocation::SOURCE) {
-		wait(self->agent.abortBackup(record->getPeerDatabase(),
-		                             record->getTagName(),
-		                             PartialBackup{ false },
-		                             AbortOldBackup::False,
-		                             DstOnly{ false }));
-	} else {
-		DatabaseBackupAgent sourceAgent(record->getPeerDatabase());
-		wait(sourceAgent.abortBackup(
-		    self->db, record->getTagName(), PartialBackup{ false }, AbortOldBackup::False, DstOnly{ false }));
+ACTOR Future<ErrorOr<Void>> abortDr(TenantBalancer* self, MovementRecord const* record) {
+	try {
+		if (record->getMovementLocation() == MovementLocation::SOURCE) {
+			wait(self->agent.abortBackup(record->getPeerDatabase(),
+			                             record->getTagName(),
+			                             PartialBackup{ false },
+			                             AbortOldBackup::False,
+			                             DstOnly{ false }));
+		} else {
+			DatabaseBackupAgent sourceAgent(record->getPeerDatabase());
+			wait(sourceAgent.abortBackup(
+			    self->db, record->getTagName(), PartialBackup{ false }, AbortOldBackup::False, DstOnly{ false }));
+		}
+	} catch (Error& e) {
+		return e;
 	}
 
 	return Void();
@@ -699,15 +703,29 @@ ACTOR Future<Optional<Database>> getOrInsertDatabase(TenantBalancer* self,
 	return db;
 }
 
-ACTOR Future<ReceiveTenantFromClusterReply> startSourceMovement(TenantBalancer* self, MovementRecord* record) {
+ACTOR Future<ReceiveTenantFromClusterReply> startSourceMovement(TenantBalancer* self,
+                                                                MovementRecord* record,
+                                                                bool cleanupOnError) {
 	// Send a request to the destination database to prepare for the move
-	state ReceiveTenantFromClusterReply reply = wait(
-	    sendTenantBalancerRequest(record->getPeerDatabase(),
-	                              ReceiveTenantFromClusterRequest(record->getMovementId(),
-	                                                              record->getSourcePrefix(),
-	                                                              record->getDestinationPrefix(),
-	                                                              self->connRecord->getConnectionString().toString()),
-	                              &TenantBalancerInterface::receiveTenantFromCluster));
+	state ReceiveTenantFromClusterReply reply;
+	try {
+		ReceiveTenantFromClusterReply r = wait(sendTenantBalancerRequest(
+		    record->getPeerDatabase(),
+		    ReceiveTenantFromClusterRequest(record->getMovementId(),
+		                                    record->getSourcePrefix(),
+		                                    record->getDestinationPrefix(),
+		                                    self->connRecord->getConnectionString().toString()),
+		    &TenantBalancerInterface::receiveTenantFromCluster));
+
+		reply = r;
+	} catch (Error& e) {
+		state Error destError = e;
+		if (cleanupOnError) {
+			wait(self->clearMovementRecord(*record));
+		}
+
+		throw destError;
+	}
 
 	Standalone<VectorRef<KeyRangeRef>> backupRanges;
 	backupRanges.push_back_deep(backupRanges.arena(), prefixRange(record->getSourcePrefix()));
@@ -715,13 +733,19 @@ ACTOR Future<ReceiveTenantFromClusterReply> startSourceMovement(TenantBalancer* 
 	// Submit a DR to move the target range
 	bool replacePrefix = record->getSourcePrefix() != record->getDestinationPrefix();
 
-	wait(self->agent.submitBackup(record->getPeerDatabase(),
-	                              record->getTagName(),
-	                              backupRanges,
-	                              StopWhenDone::False,
-	                              replacePrefix ? record->getDestinationPrefix() : StringRef(),
-	                              replacePrefix ? record->getSourcePrefix() : StringRef(),
-	                              LockDB::False));
+	try {
+		wait(self->agent.submitBackup(record->getPeerDatabase(),
+		                              record->getTagName(),
+		                              backupRanges,
+		                              StopWhenDone::False,
+		                              replacePrefix ? record->getDestinationPrefix() : StringRef(),
+		                              replacePrefix ? record->getSourcePrefix() : StringRef(),
+		                              LockDB::False));
+	} catch (Error& e) {
+		state Error submitErr = e;
+		wait(success(abortDr(self, record)) && self->clearMovementRecord(*record) && abortPeer(self, *record));
+		throw submitErr;
+	}
 
 	// Update the state of the movement to started
 	record->movementState = MovementState::STARTED;
@@ -771,7 +795,8 @@ ACTOR Future<Void> moveTenantToCluster(TenantBalancer* self, MoveTenantToCluster
 		wait(self->saveMovementRecord(record));
 
 		// Start the movement
-		state ReceiveTenantFromClusterReply replyFromDestinationDatabase = wait(startSourceMovement(self, &record));
+		state ReceiveTenantFromClusterReply replyFromDestinationDatabase =
+		    wait(startSourceMovement(self, &record, true));
 
 		// Check if a DR agent is running to process the move
 		state bool agentRunning = wait(self->agent.checkActive(destDatabase.get()));
@@ -838,7 +863,6 @@ ACTOR Future<Void> receiveTenantFromCluster(TenantBalancer* self, ReceiveTenantF
 				                                           req.srcConnectionString,
 				                                           srcDatabase.get());
 
-				wait(self->saveMovementRecord(destinationMovementRecord));
 			} else {
 				throw;
 			}
@@ -846,15 +870,17 @@ ACTOR Future<Void> receiveTenantFromCluster(TenantBalancer* self, ReceiveTenantF
 
 		state std::string lockedTenant = "";
 		if (destinationMovementRecord.movementState == MovementState::INITIALIZING) {
-			// 1. TODO: Lock the destination before we start the movement
-
-			// 2.Check if prefix is empty.
+			// Check if prefix is empty.
 			bool isPrefixEmpty = wait(self->isTenantEmpty(self->db, req.destPrefix));
 			if (!isPrefixEmpty) {
 				throw movement_dest_prefix_not_empty();
 			}
 
-			// 3.Update record
+			wait(self->saveMovementRecord(destinationMovementRecord));
+
+			// TODO: Lock the destination before we start the movement
+
+			// Update record
 			destinationMovementRecord.movementState = MovementState::STARTED;
 			wait(self->saveMovementRecord(destinationMovementRecord));
 		}
@@ -1281,7 +1307,11 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 	try {
 		state MovementRecord record = self->getMovement(req.movementLocation, req.prefix, req.movementId);
 
-		wait(abortDr(self, &record));
+		ErrorOr<Void> result = wait(abortDr(self, &record));
+		if (result.isError()) {
+			throw result.getError();
+		}
+
 		wait(self->clearMovementRecord(record));
 
 		TraceEvent(SevDebug, "TenantBalancerAbortComplete", self->tbi.id())
@@ -1381,7 +1411,7 @@ ACTOR Future<Void> abortMovementDueToFailedDr(TenantBalancer* self, MovementReco
 	    .detail("SourcePrefix", record->getSourcePrefix())
 	    .detail("DestinationPrefix", record->getDestinationPrefix());
 
-	wait(abortPeer(self, *record) && abortDr(self, record));
+	wait(abortPeer(self, *record) && success(abortDr(self, record)));
 
 	record->setMovementError("The DR copying the data has failed or stopped running");
 	wait(self->saveMovementRecord(*record));
@@ -1401,7 +1431,7 @@ ACTOR Future<ErrorOr<Void>> TenantBalancer::recoverSourceMovement(TenantBalancer
 			}
 			// Otherwise, attempt to start the movement
 			else {
-				ReceiveTenantFromClusterReply reply = wait(startSourceMovement(self, record));
+				ReceiveTenantFromClusterReply reply = wait(startSourceMovement(self, record, false));
 			}
 		} else if (record->movementState == MovementState::STARTED) {
 			if (!activeDr) {
