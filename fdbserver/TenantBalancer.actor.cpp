@@ -581,8 +581,8 @@ ACTOR Future<EBackupState> getDrState(TenantBalancer* self,
 	return backupState;
 }
 
-ACTOR Future<EBackupState> getDrState(TenantBalancer* self, Standalone<StringRef> tag) {
-	state Reference<ReadYourWritesTransaction> tr = makeReference<ReadYourWritesTransaction>(self->db);
+ACTOR Future<EBackupState> getDrState(TenantBalancer* self, Database destinationDb, Standalone<StringRef> tag) {
+	state Reference<ReadYourWritesTransaction> tr = makeReference<ReadYourWritesTransaction>(destinationDb);
 	loop {
 		try {
 			EBackupState backupState = wait(getDrState(self, tag, tr));
@@ -594,8 +594,8 @@ ACTOR Future<EBackupState> getDrState(TenantBalancer* self, Standalone<StringRef
 	}
 }
 
-ACTOR Future<bool> checkForActiveDr(TenantBalancer* self, Standalone<StringRef> tag) {
-	EBackupState backupState = wait(getDrState(self, tag));
+ACTOR Future<bool> checkForActiveDr(TenantBalancer* self, Database destinationDb, Standalone<StringRef> tag) {
+	EBackupState backupState = wait(getDrState(self, destinationDb, tag));
 	return backupState == EBackupState::STATE_SUBMITTED || backupState == EBackupState::STATE_RUNNING ||
 	       backupState == EBackupState::STATE_RUNNING_DIFFERENTIAL;
 }
@@ -642,11 +642,11 @@ bool updateMovementRecordWithDrState(TenantBalancer* self,
 	}
 
 	if (newMovementState.get().first == MovementState::ERROR) {
-		if (drStatus->backupState == EBackupState::STATE_ERRORED) {
+		if (drStatus->backupState == EBackupState::STATE_ERRORED && drStatus->errorValues.size() == 1) {
 			record->setMovementError(
 			    format("%s: %s.",
 			           newMovementState.get().second.substr(0, newMovementState.get().second.size() - 1).c_str(),
-			           drStatus->errorName));
+			           drStatus->errorValues[0].value.toString().c_str()));
 		} else {
 			record->setMovementError(newMovementState.get().second);
 		}
@@ -973,6 +973,7 @@ ACTOR Future<Void> getActiveMovements(TenantBalancer* self, GetActiveMovementsRe
 			loop {
 				try {
 					for (int i = 0; i < numMovements; ++i) {
+						// TODO: we need these requests to go to the destination DB
 						backupStateFutures.push_back(getDrState(
 						    self, MovementRecord::getTagName(filteredMovements[startMovement + i].movementId), tr));
 					}
@@ -1026,8 +1027,16 @@ ACTOR Future<Void> getActiveMovements(TenantBalancer* self, GetActiveMovementsRe
 }
 
 ACTOR Future<TenantMovementStatus> getStatusAndUpdateMovementRecord(TenantBalancer* self, MovementRecord* record) {
-	// TODO make sure is it ok to specify errorLimit as 0
-	state DatabaseBackupStatus drStatus = wait(self->agent.getStatusData(self->db, 0, record->getTagName()));
+	state DatabaseBackupStatus drStatus;
+	if (record->getMovementLocation() == MovementLocation::SOURCE) {
+		DatabaseBackupStatus s = wait(self->agent.getStatusData(record->getPeerDatabase(), 1, record->getTagName()));
+		drStatus = s;
+	} else {
+		state DatabaseBackupAgent sourceAgent(record->getPeerDatabase());
+		DatabaseBackupStatus s = wait(sourceAgent.getStatusData(self->db, 1, record->getTagName()));
+		drStatus = s;
+	}
+
 	if (updateMovementRecordWithDrState(self, record, &drStatus)) {
 		wait(self->saveMovementRecord(*record));
 	}
@@ -1074,7 +1083,8 @@ ACTOR Future<Void> getMovementStatus(TenantBalancer* self, GetMovementStatusRequ
 		    .detail("SourcePrefix", record.getSourcePrefix())
 		    .detail("DestinationPrefix", record.getDestinationPrefix())
 		    .detail("PeerConnectionString",
-		            record.getPeerDatabase()->getConnectionRecord()->getConnectionString().toString());
+		            record.getPeerDatabase()->getConnectionRecord()->getConnectionString().toString())
+		    .detail("MovementStatus", status.toString());
 
 		GetMovementStatusReply reply(status);
 		req.reply.send(reply);
@@ -1204,7 +1214,7 @@ ACTOR Future<Void> finishDestinationMovement(TenantBalancer* self, FinishDestina
 		state MovementRecord record = self->getIncomingMovement(Key(req.destinationPrefix), req.movementId);
 
 		if (record.movementState == MovementState::STARTED) {
-			EBackupState backupState = wait(getDrState(self, record.getTagName()));
+			EBackupState backupState = wait(getDrState(self, self->db, record.getTagName()));
 			if (backupState != EBackupState::STATE_RUNNING_DIFFERENTIAL) {
 				TraceEvent(SevWarn, "TenantBalancerInvalidFinishDestinationMovementRequest", self->tbi.id())
 				    .detail("MovementId", record.getMovementId())
@@ -1307,6 +1317,7 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 	try {
 		state MovementRecord record = self->getMovement(req.movementLocation, req.prefix, req.movementId);
 
+		// TODO: this might fail if aborted from both sides
 		ErrorOr<Void> result = wait(abortDr(self, &record));
 		if (result.isError()) {
 			throw result.getError();
@@ -1421,7 +1432,7 @@ ACTOR Future<Void> abortMovementDueToFailedDr(TenantBalancer* self, MovementReco
 
 ACTOR Future<ErrorOr<Void>> TenantBalancer::recoverSourceMovement(TenantBalancer* self, MovementRecord* record) {
 	try {
-		bool activeDr = wait(checkForActiveDr(self, record->getTagName()));
+		bool activeDr = wait(checkForActiveDr(self, record->getPeerDatabase(), record->getTagName()));
 
 		if (record->movementState == MovementState::INITIALIZING) {
 			// If DR is already running, then we can just move to the started phase.
