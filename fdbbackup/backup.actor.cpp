@@ -4862,7 +4862,7 @@ int main(int argc, char* argv[]) {
 				break;
 			case DBMoveType::STATUS: {
 				bool canInitCluster = initCluster();
-				bool canInitSourceCluster = initSourceCluster(true);
+				bool canInitSourceCluster = initSourceCluster(true, true);
 				if (!canInitCluster && !canInitSourceCluster) {
 					fprintf(stderr, "ERROR: -s or -d is required\n");
 					return FDB_EXIT_ERROR;
@@ -4952,7 +4952,7 @@ int main(int argc, char* argv[]) {
 				break;
 			case DBMoveType::LIST: {
 				bool canInitCluster = initCluster();
-				bool canInitSourceCluster = initSourceCluster(true);
+				bool canInitSourceCluster = initSourceCluster(true, true);
 				if (!canInitCluster && !canInitSourceCluster) {
 					fprintf(stderr, "ERROR: -s and/or -d are required\n");
 					return FDB_EXIT_ERROR;
