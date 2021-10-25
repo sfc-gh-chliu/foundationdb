@@ -1355,6 +1355,8 @@ ACTOR Future<Void> getValueQ(StorageServer* data, GetValueRequest req) {
 					TEST(true); // transaction_too_old after readValue
 					throw transaction_too_old();
 				}
+				data->checkChangeCounter(changeCounter, req.key);
+				v = vv;
 			}
 		}
 
