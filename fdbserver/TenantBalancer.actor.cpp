@@ -754,7 +754,37 @@ ACTOR Future<ReceiveTenantFromClusterReply> startSourceMovement(TenantBalancer* 
 		                              LockDB::False));
 	} catch (Error& e) {
 		state Error submitErr = e;
-		wait(success(abortDr(self, record)) && self->clearMovementRecord(*record) && abortPeer(self, *record));
+
+		if (cleanupOnError) {
+			try {
+				state Future<Void> abortPeerFuture = abortPeer(self, *record);
+				ErrorOr<Void> abortDrResult = wait(abortDr(self, record));
+				if (!abortDrResult.isError() || abortDrResult.getError().code() == error_code_backup_unneeded) {
+					wait(self->clearMovementRecord(*record));
+				} else {
+					TraceEvent(SevWarn, "TenantBalancerStartMovementAbortDRFailed", self->tbi.id())
+					    .error(abortDrResult.getError())
+					    .detail("MovementId", record->getMovementId())
+					    .detail("SourcePrefix", record->getSourcePrefix())
+					    .detail("DestinationPrefix", record->getDestinationPrefix())
+					    .detail("DestinationConnectionString",
+					            record->getPeerDatabase()->getConnectionRecord()->getConnectionString().toString());
+
+					record->setMovementError(format("Failed to start movement: %s", submitErr.what()));
+					wait(self->saveMovementRecord(*record));
+				}
+				wait(abortPeerFuture);
+			} catch (Error& cleanupErr) {
+				TraceEvent(SevWarn, "TenantBalancerStartMovementCleanupFailed", self->tbi.id())
+				    .error(cleanupErr)
+				    .detail("MovementId", record->getMovementId())
+				    .detail("SourcePrefix", record->getSourcePrefix())
+				    .detail("DestinationPrefix", record->getDestinationPrefix())
+				    .detail("DestinationConnectionString",
+				            record->getPeerDatabase()->getConnectionRecord()->getConnectionString().toString());
+			}
+		}
+
 		throw submitErr;
 	}
 
