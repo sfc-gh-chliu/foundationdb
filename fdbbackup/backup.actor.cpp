@@ -2191,13 +2191,56 @@ ACTOR Future<TenantMovementStatus> getMovementStatus(Database database, Key pref
 ACTOR Future<Void> statusDBMove(Database db, Key prefix, MovementLocation movementLocation, bool json = false) {
 	try {
 		state TenantMovementStatus status = wait(getMovementStatus(db, prefix, movementLocation));
-		std::string statusText = json ? status.toJson() : status.toString();
-		printf("%s\n", statusText.c_str());
+
+		if (json) {
+			printf("%s\n", status.toJson().c_str());
+		} else {
+			printf("Status for the movement with ID %s:\n", status.tenantMovementInfo.movementId.toString().c_str());
+			printf("  Movement state: %s\n",
+			       TenantBalancerInterface::movementStateToString(status.tenantMovementInfo.movementState).c_str());
+			printf("  Moving prefix: %s\n", printable(status.tenantMovementInfo.sourcePrefix).c_str());
+			if (status.tenantMovementInfo.sourcePrefix != status.tenantMovementInfo.destinationPrefix) {
+				printf("  Replacement prefix: %s\n", printable(status.tenantMovementInfo.destinationPrefix).c_str());
+			}
+			if (movementLocation == MovementLocation::SOURCE) {
+				printf("  Destination cluster: %s\n", status.tenantMovementInfo.peerConnectionString.c_str());
+			} else {
+				printf("  Source cluster: %s\n", status.tenantMovementInfo.peerConnectionString.c_str());
+			}
+			printf("  Source locked: %s\n", status.isSourceLocked ? "true" : "false");
+			printf("  Destination locked: %s\n", status.isDestinationLocked ? "true" : "false");
+			printf("  Destination database version lag: %.03f seconds\n", status.databaseVersionLag);
+			if (status.mutationLag.present()) {
+				printf("  Mutation lag: %.03f seconds\n", status.mutationLag.get());
+			}
+			if (status.switchVersion.present()) {
+				printf("  Switch version: %lld\n", status.switchVersion.get());
+			}
+			if (status.errorMessage.present()) {
+				printf("  Error: %s\n", status.errorMessage.get().c_str());
+			}
+		}
 	} catch (Error& e) {
 		if (e.code() == error_code_actor_cancelled)
 			throw;
-		fprintf(stderr, "ERROR: %s\n", e.what());
-		throw;
+
+		if (json) {
+			json_spirit::mValue statusRootValue;
+			JSONDoc statusRoot(statusRootValue);
+
+			// Insert tenantMoveInfo into JSON
+			if (movementLocation == MovementLocation::SOURCE) {
+				statusRoot.create("sourcePrefix") = prefix.toString();
+			} else {
+				statusRoot.create("destinationPrefix") = prefix.toString();
+			}
+			statusRoot.create("movementState") = "Unknown";
+			statusRoot.create("error") = e.what();
+			printf("%s\n", json_spirit::write_string(statusRootValue).c_str());
+			return Void();
+		} else {
+			fprintf(stderr, "ERROR: %s\n", e.what());
+		}
 	}
 
 	return Void();
@@ -2247,12 +2290,12 @@ ACTOR Future<Void> fetchAndDisplayDBMove(Database db,
 			for (int i = 0; i < activeMovements.size(); ++i) {
 				printf("%d. %s\n", i + 1, activeMovements[i].movementId.toString().c_str());
 				if (locationFilter == MovementLocation::SOURCE) {
-					printf("  Prefix: %s\n", printable(activeMovements[i].destinationPrefix).c_str());
+					printf("  Prefix: %s\n", printable(activeMovements[i].sourcePrefix).c_str());
 					if (!peerDatabaseConnectionStringFilter.present()) {
 						printf("  Destination cluster: %s\n", activeMovements[i].peerConnectionString.c_str());
 					}
 					if (activeMovements[i].destinationPrefix != activeMovements[i].sourcePrefix) {
-						printf("  New prefix: %s\n", printable(activeMovements[i].destinationPrefix).c_str());
+						printf("  Replacement prefix: %s\n", printable(activeMovements[i].destinationPrefix).c_str());
 					}
 				} else {
 					printf("  Prefix: %s\n", printable(activeMovements[i].destinationPrefix).c_str());
@@ -2271,7 +2314,6 @@ ACTOR Future<Void> fetchAndDisplayDBMove(Database db,
 		if (e.code() == error_code_actor_cancelled)
 			throw;
 		fprintf(stderr, "ERROR: %s\n", e.what());
-		throw;
 	}
 	return Void();
 }
@@ -2317,7 +2359,6 @@ ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> ma
 			throw;
 
 		fprintf(stderr, "ERROR: %s\n", e.what());
-		throw backup_error();
 	}
 
 	return Void();
@@ -2363,7 +2404,6 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 			throw;
 
 		fprintf(stderr, "ERROR: %s\n", e.what());
-		throw;
 	}
 
 	return Void();
@@ -2389,13 +2429,12 @@ ACTOR Future<Void> cleanupDBMove(Database src, Key srcPrefix, CleanupMovementSou
 				        : Never();
 			}
 		}
-		printf("The data movement on %s was successfully cleared up.\n",
+		printf("The data movement on %s was successfully cleaned up.\n",
 		       src->getConnectionRecord()->getConnectionString().toString().c_str());
 	} catch (Error& e) {
 		if (e.code() == error_code_actor_cancelled)
 			throw;
 		fprintf(stderr, "ERROR: %s\n", e.what());
-		throw;
 	}
 
 	return Void();

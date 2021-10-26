@@ -228,7 +228,8 @@ struct TenantMovementStatus {
 	TenantMovementInfo tenantMovementInfo;
 	bool isSourceLocked; // Whether the prefix is locked on the source
 	bool isDestinationLocked; // Whether the prefix is locked on the destination
-	double databaseVersionLag; // The number of seconds of lag between the version on the source and the version on the destination
+	Optional<double> databaseVersionLag; // The number of seconds of lag between the version on the source and the
+	                                     // version on the destination
 	Optional<double> mutationLag; // The number of seconds of lag between the current mutation on the source and the
 	                              // mutations being applied to the destination
 	Optional<Version> switchVersion;

@@ -53,41 +53,6 @@ std::string TenantBalancerInterface::movementLocationToString(MovementLocation m
 	}
 }
 
-std::string TenantMovementInfo::toString() const {
-	std::unordered_map<std::string, std::string> infoMap;
-	infoMap["movementId"] = movementId.toString();
-	infoMap["peerConnectionString"] = peerConnectionString;
-	infoMap["sourcePrefix"] = sourcePrefix.toString();
-	infoMap["destinationPrefix"] = destinationPrefix.toString();
-	infoMap["movementState"] = TenantBalancerInterface::movementStateToString(movementState);
-	std::string movementInfo;
-	for (const auto& itr : infoMap) {
-		movementInfo += itr.first + " : " + itr.second + "\n";
-	}
-	return movementInfo;
-}
-
-std::string TenantMovementStatus::toString() const {
-	std::unordered_map<std::string, std::string> statusInfoMap;
-	statusInfoMap["isSourceLocked"] = isSourceLocked ? "true" : "false";
-	statusInfoMap["isDestinationLocked"] = isDestinationLocked ? "true" : "false";
-	statusInfoMap["databaseVersionLag"] = std::to_string(databaseVersionLag);
-	if (mutationLag.present()) {
-		statusInfoMap["mutationLag"] = std::to_string(mutationLag.get());
-	}
-	if (switchVersion.present()) {
-		statusInfoMap["switchVersion"] = std::to_string(switchVersion.get());
-	}
-	if (errorMessage.present()) {
-		statusInfoMap["errorMessage"] = errorMessage.get();
-	}
-	std::string movementInfo = tenantMovementInfo.toString();
-	for (const auto& itr : statusInfoMap) {
-		movementInfo += itr.first + " : " + itr.second + "\n";
-	}
-	return movementInfo;
-}
-
 std::string TenantMovementStatus::toJson() const {
 	json_spirit::mValue statusRootValue;
 	JSONDoc statusRoot(statusRootValue);
@@ -103,7 +68,9 @@ std::string TenantMovementStatus::toJson() const {
 	// Insert movement status into JSON
 	statusRoot.create("isSourceLocked") = isSourceLocked;
 	statusRoot.create("isDestinationLocked") = isDestinationLocked;
-	statusRoot.create("databaseVersionLag") = databaseVersionLag;
+	if (databaseVersionLag.get()) {
+		statusRoot.create("destinationDatabaseVersionLag") = databaseVersionLag.get();
+	}
 	if (mutationLag.present()) {
 		statusRoot.create("mutationLag") = mutationLag.get();
 	}
@@ -111,7 +78,7 @@ std::string TenantMovementStatus::toJson() const {
 		statusRoot.create("switchVersion") = switchVersion.get();
 	}
 	if (errorMessage.present()) {
-		statusRoot.create("errorMessage") = errorMessage.get();
+		statusRoot.create("error") = errorMessage.get();
 	}
 	return json_spirit::write_string(statusRootValue);
 }

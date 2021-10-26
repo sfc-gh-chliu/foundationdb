@@ -1060,32 +1060,41 @@ ACTOR Future<Version> getDatabaseVersion(Database db) {
 	}
 }
 
-ACTOR Future<TenantMovementStatus> getStatusAndUpdateMovementRecord(TenantBalancer* self, MovementRecord* record) {
-	state DatabaseBackupStatus drStatus;
+ACTOR Future<double> getDatabaseVersionLag(TenantBalancer* self, MovementRecord const* record) {
 	state Version sourceVersion;
 	state Version destVersion;
+
 	if (record->getMovementLocation() == MovementLocation::SOURCE) {
-		DatabaseBackupStatus s = wait(self->agent.getStatusData(record->getPeerDatabase(), 1, record->getTagName()));
-		drStatus = s;
 		Version dv = wait(getDatabaseVersion(record->getPeerDatabase()));
 		destVersion = dv;
 		Version sv = wait(getDatabaseVersion(self->db));
 		sourceVersion = sv;
 	} else {
-		state DatabaseBackupAgent sourceAgent(record->getPeerDatabase());
-		DatabaseBackupStatus s = wait(sourceAgent.getStatusData(self->db, 1, record->getTagName()));
-		drStatus = s;
 		Version dv = wait(getDatabaseVersion(self->db));
 		destVersion = dv;
 		Version sv = wait(getDatabaseVersion(record->getPeerDatabase()));
 		sourceVersion = sv;
 	}
 
+	return std::max<double>(sourceVersion - destVersion, 0) / CLIENT_KNOBS->CORE_VERSIONSPERSECOND;
+}
+
+ACTOR Future<TenantMovementStatus> getStatusAndUpdateMovementRecord(TenantBalancer* self, MovementRecord* record) {
+	state DatabaseBackupStatus drStatus;
+	if (record->getMovementLocation() == MovementLocation::SOURCE) {
+		DatabaseBackupStatus s = wait(self->agent.getStatusData(record->getPeerDatabase(), 1, record->getTagName()));
+		drStatus = s;
+	} else {
+		state DatabaseBackupAgent sourceAgent(record->getPeerDatabase());
+		DatabaseBackupStatus s = wait(sourceAgent.getStatusData(self->db, 1, record->getTagName()));
+		drStatus = s;
+	}
+
 	if (updateMovementRecordWithDrState(self, record, &drStatus)) {
 		wait(self->saveMovementRecord(*record));
 	}
 
-	TenantMovementStatus status;
+	state TenantMovementStatus status;
 	status.tenantMovementInfo =
 	    TenantMovementInfo(record->getMovementId(),
 	                       record->getPeerDatabase()->getConnectionRecord()->getConnectionString().toString(),
@@ -1097,10 +1106,15 @@ ACTOR Future<TenantMovementStatus> getStatusAndUpdateMovementRecord(TenantBalanc
 	status.isSourceLocked = false;
 	status.isDestinationLocked = false;
 
-	status.databaseVersionLag = std::max<double>(sourceVersion - destVersion, 0) / CLIENT_KNOBS->CORE_VERSIONSPERSECOND;
-	if (drStatus.secondsBehind != -1) {
-		status.mutationLag = drStatus.secondsBehind;
+	if (record->movementState == MovementState::STARTED || record->movementState == MovementState::READY_FOR_SWITCH ||
+	    record->movementState == MovementState::SWITCHING) {
+		double versionLag = wait(getDatabaseVersionLag(self, record));
+		status.databaseVersionLag = versionLag;
+		if (drStatus.secondsBehind != -1) {
+			status.mutationLag = drStatus.secondsBehind;
+		}
 	}
+
 	if (record->switchVersion != invalidVersion) {
 		status.switchVersion = record->switchVersion;
 	}
@@ -1127,7 +1141,7 @@ ACTOR Future<Void> getMovementStatus(TenantBalancer* self, GetMovementStatusRequ
 		    .detail("DestinationPrefix", record.getDestinationPrefix())
 		    .detail("PeerConnectionString",
 		            record.getPeerDatabase()->getConnectionRecord()->getConnectionString().toString())
-		    .detail("MovementStatus", status.toString());
+		    .detail("MovementStatus", status.toJson());
 
 		GetMovementStatusReply reply(status);
 		req.reply.send(reply);
