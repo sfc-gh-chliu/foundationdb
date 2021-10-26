@@ -2240,9 +2240,9 @@ ACTOR Future<Void> fetchAndDisplayDBMove(Database db,
 			printf("No movements found\n");
 		} else {
 			if (activeMovements.size() == 1) {
-				printf("There is 1 active movement:\n");
+				printf("There is 1 active movement:\n\n");
 			} else {
-				printf("There are %d active movements:\n", activeMovements.size());
+				printf("There are %d active movements:\n\n", activeMovements.size());
 			}
 			for (int i = 0; i < activeMovements.size(); ++i) {
 				printf("%d. %s\n", i + 1, activeMovements[i].movementId.toString().c_str());
@@ -2263,12 +2263,8 @@ ACTOR Future<Void> fetchAndDisplayDBMove(Database db,
 						printf("  Original prefix: %s\n", printable(activeMovements[i].sourcePrefix).c_str());
 					}
 				}
-				printf("  Movement state: %s\n",
+				printf("  Movement state: %s\n\n",
 				       TenantBalancerInterface::movementStateToString(activeMovements[i].movementState).c_str());
-
-				if (i != activeMovements.size() - 1) {
-					printf("\n");
-				}
 			}
 		}
 	} catch (Error& e) {
