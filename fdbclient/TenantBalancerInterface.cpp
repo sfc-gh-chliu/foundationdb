@@ -60,8 +60,8 @@ std::string TenantMovementStatus::toJson() const {
 	// Insert tenantMoveInfo into JSON
 	statusRoot.create("movementId") = tenantMovementInfo.movementId.toString();
 	statusRoot.create("peerConnectionString") = tenantMovementInfo.peerConnectionString;
-	statusRoot.create("sourcePrefix") = tenantMovementInfo.sourcePrefix.toString();
-	statusRoot.create("destinationPrefix") = tenantMovementInfo.destinationPrefix.toString();
+	statusRoot.create("sourcePrefix") = printable(tenantMovementInfo.sourcePrefix);
+	statusRoot.create("destinationPrefix") = printable(tenantMovementInfo.destinationPrefix);
 	statusRoot.create("movementState") =
 	    TenantBalancerInterface::movementStateToString(tenantMovementInfo.movementState);
 
