@@ -562,7 +562,7 @@ ACTOR Future<ErrorOr<Void>> abortDr(TenantBalancer* self, MovementRecord const* 
 			                             AbortOldBackup::False,
 			                             DstOnly{ false }));
 		} else {
-			DatabaseBackupAgent sourceAgent(record->getPeerDatabase());
+			state DatabaseBackupAgent sourceAgent(record->getPeerDatabase());
 			wait(sourceAgent.abortBackup(
 			    self->db, record->getTagName(), PartialBackup{ false }, AbortOldBackup::False, DstOnly{ false }));
 		}
@@ -1249,14 +1249,16 @@ ACTOR Future<Void> finishDestinationMovement(TenantBalancer* self, FinishDestina
 
 				throw movement_error();
 			}
+		}
 
+		if (record.movementState == MovementState::STARTED || record.movementState == MovementState::READY_FOR_SWITCH) {
 			record.movementState = MovementState::SWITCHING;
 			record.switchVersion = req.version;
 			wait(self->saveMovementRecord(record));
 		}
 
 		if (record.movementState == MovementState::SWITCHING) {
-			DatabaseBackupAgent sourceBackupAgent(record.getPeerDatabase());
+			state DatabaseBackupAgent sourceBackupAgent(record.getPeerDatabase());
 			wait(sourceBackupAgent.flushBackup(self->db, record.getTagName(), record.switchVersion));
 			// TODO: unlock DR prefix
 
@@ -1341,9 +1343,8 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 	try {
 		state MovementRecord record = self->getMovement(req.movementLocation, req.prefix, req.movementId);
 
-		// TODO: this might fail if aborted from both sides
 		ErrorOr<Void> result = wait(abortDr(self, &record));
-		if (result.isError()) {
+		if (result.isError() && result.getError().code() != error_code_backup_unneeded) {
 			throw result.getError();
 		}
 

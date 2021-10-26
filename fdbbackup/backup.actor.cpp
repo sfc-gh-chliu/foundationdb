@@ -2159,18 +2159,8 @@ ACTOR Future<Void> submitDBMove(Database src, Database dest, Key srcPrefix, Key 
 		// TODO This list of errors may change
 		if (e.code() == error_code_actor_cancelled)
 			throw;
-		switch (e.code()) {
-		case error_code_backup_error:
-			fprintf(stderr, "ERROR: An error was encountered during submission\n");
-			break;
-		case error_code_backup_duplicate:
-			fprintf(stderr, "ERROR: A data movement is already running\n");
-			break;
-		default:
-			fprintf(stderr, "ERROR: %s\n", e.what());
-			break;
-		}
 
+		fprintf(stderr, "ERROR: %s\n", e.what());
 		throw backup_error();
 	}
 
@@ -2289,8 +2279,8 @@ ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> ma
 		state Future<Void> initialize = Void();
 		loop choose {
 			when(ErrorOr<FinishSourceMovementReply> reply = wait(finishSourceMovementReply)) {
-				if (finishSourceMovementReply.isError()) {
-					throw finishSourceMovementReply.getError();
+				if (reply.isError()) {
+					throw reply.getError();
 				}
 				break;
 			}
@@ -2306,18 +2296,8 @@ ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> ma
 	} catch (Error& e) {
 		if (e.code() == error_code_actor_cancelled)
 			throw;
-		switch (e.code()) {
-		case error_code_backup_error:
-			fprintf(stderr, "ERROR: An error was encountered during submission\n");
-			break;
-		case error_code_backup_duplicate:
-			fprintf(stderr, "ERROR: A data movement is already running'\n");
-			break;
-		default:
-			fprintf(stderr, "ERROR: %s\n", e.what());
-			break;
-		}
 
+		fprintf(stderr, "ERROR: %s\n", e.what());
 		throw backup_error();
 	}
 
@@ -2362,17 +2342,8 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 	} catch (Error& e) {
 		if (e.code() == error_code_actor_cancelled)
 			throw;
-		switch (e.code()) {
-		case error_code_backup_error:
-			fprintf(stderr, "ERROR: An error was encountered during submission\n");
-			break;
-		case error_code_backup_unneeded:
-			fprintf(stderr, "ERROR: A data movement was not running\n");
-			break;
-		default:
-			fprintf(stderr, "ERROR: %s\n", e.what());
-			break;
-		}
+
+		fprintf(stderr, "ERROR: %s\n", e.what());
 		throw;
 	}
 
