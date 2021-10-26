@@ -19,6 +19,7 @@
  */
 
 #include <cinttypes>
+#include "fdbclient/BlobWorkerInterface.h"
 #include "fdbserver/Status.h"
 #include "flow/Trace.h"
 #include "fdbclient/NativeAPI.actor.h"
@@ -724,6 +725,7 @@ ACTOR static Future<JsonBuilderObject> processStatusFetcher(
     std::vector<std::pair<TLogInterface, EventMap>> tLogs,
     std::vector<std::pair<CommitProxyInterface, EventMap>> commitProxies,
     std::vector<std::pair<GrvProxyInterface, EventMap>> grvProxies,
+    std::vector<BlobWorkerInterface> blobWorkers,
     ServerCoordinators coordinators,
     Database cx,
     Optional<DatabaseConfiguration> configuration,
@@ -799,6 +801,10 @@ ACTOR static Future<JsonBuilderObject> processStatusFetcher(
 		roles.addRole("tenant_balancer", db->get().client.tenantBalancer.get());
 	}
 
+	if (CLIENT_KNOBS->ENABLE_BLOB_GRANULES && db->get().blobManager.present()) {
+		roles.addRole("blob_manager", db->get().blobManager.get());
+	}
+
 	for (auto& tLogSet : db->get().logSystemConfig.tLogs) {
 		for (auto& it : tLogSet.logRouters) {
 			if (it.present()) {
@@ -860,6 +866,13 @@ ACTOR static Future<JsonBuilderObject> processStatusFetcher(
 	for (res = resolvers.begin(); res != resolvers.end(); ++res) {
 		roles.addRole("resolver", *res);
 		wait(yield());
+	}
+
+	if (CLIENT_KNOBS->ENABLE_BLOB_GRANULES) {
+		for (auto blobWorker : blobWorkers) {
+			roles.addRole("blob_worker", blobWorker);
+			wait(yield());
+		}
 	}
 
 	for (workerItr = workers.begin(); workerItr != workers.end(); ++workerItr) {
@@ -1046,8 +1059,8 @@ ACTOR static Future<JsonBuilderObject> processStatusFetcher(
 			}
 
 		} catch (Error& e) {
-			// Something strange occurred, process list is incomplete but what was built so far, if anything, will be
-			// returned.
+			// Something strange occurred, process list is incomplete but what was built so far, if anything, will
+			// be returned.
 			incomplete_reasons->insert("Cannot retrieve all process status information.");
 		}
 
@@ -1471,8 +1484,9 @@ ACTOR static Future<Void> logRangeWarningFetcher(Database cx,
 						}
 						existingRanges.insert(rangePair);
 					} else {
-						// This cleanup is done during status, because it should only be required once after upgrading
-						// to 6.2.7 or later. There is no other good location to detect that the metadata is mismatched.
+						// This cleanup is done during status, because it should only be required once after
+						// upgrading to 6.2.7 or later. There is no other good location to detect that the metadata
+						// is mismatched.
 						TraceEvent(SevWarnAlways, "CleaningDestUidLookup")
 						    .detail("K", it.key.printable())
 						    .detail("V", it.value.printable());
@@ -1780,9 +1794,9 @@ ACTOR static Future<JsonBuilderObject> dataStatusFetcher(WorkerDetails ddWorker,
 				}
 			}
 
-			// Update minStorageReplicasRemaining. It is mainly used for fault tolerance computation later. Note that
-			// FDB treats the entire remote region as one zone, and all the zones in the remote region are in the same
-			// failure domain.
+			// Update minStorageReplicasRemaining. It is mainly used for fault tolerance computation later. Note
+			// that FDB treats the entire remote region as one zone, and all the zones in the remote region are in
+			// the same failure domain.
 			if (primary) {
 				*minStorageReplicasRemaining = std::max(*minStorageReplicasRemaining, 0) + replicas;
 			} else if (replicas > 0) {
@@ -1793,8 +1807,9 @@ ACTOR static Future<JsonBuilderObject> dataStatusFetcher(WorkerDetails ddWorker,
 	} catch (Error& e) {
 		if (e.code() == error_code_actor_cancelled)
 			throw;
-		// The most likely reason to be here is a timeout, either way we have no idea if the data state is healthy or
-		// not from the "cluster" perspective - from the client perspective it is not but that is indicated elsewhere.
+		// The most likely reason to be here is a timeout, either way we have no idea if the data state is healthy
+		// or not from the "cluster" perspective - from the client perspective it is not but that is indicated
+		// elsewhere.
 	}
 
 	return statusObjData;
@@ -1906,8 +1921,8 @@ ACTOR static Future<std::vector<std::pair<GrvProxyInterface, EventMap>>> getGrvP
 	return results;
 }
 
-// Returns the number of zones eligble for recruiting new tLogs after zone failures, to maintain the current replication
-// factor.
+// Returns the number of zones eligble for recruiting new tLogs after zone failures, to maintain the current
+// replication factor.
 static int getExtraTLogEligibleZones(const std::vector<WorkerDetails>& workers,
                                      const DatabaseConfiguration& configuration) {
 	std::set<StringRef> allZones;
@@ -2453,7 +2468,8 @@ static JsonBuilderObject faultToleranceStatusFetcher(DatabaseConfiguration confi
 		zoneFailuresWithoutLosingData = std::min(zoneFailuresWithoutLosingData, minStorageReplicasRemaining - 1);
 	}
 
-	// oldLogFaultTolerance means max failures we can tolerate to lose logs data. -1 means we lose data or availability.
+	// oldLogFaultTolerance means max failures we can tolerate to lose logs data. -1 means we lose data or
+	// availability.
 	zoneFailuresWithoutLosingData = std::max(std::min(zoneFailuresWithoutLosingData, oldLogFaultTolerance), -1);
 	statusObj["max_zone_failures_without_losing_data"] = zoneFailuresWithoutLosingData;
 
@@ -2469,12 +2485,13 @@ static JsonBuilderObject faultToleranceStatusFetcher(DatabaseConfiguration confi
 
 static std::string getIssueDescription(std::string name) {
 	if (name == "incorrect_cluster_file_contents") {
-		return "Cluster file contents do not match current cluster connection string. Verify the cluster file and its "
+		return "Cluster file contents do not match current cluster connection string. Verify the cluster file and "
+		       "its "
 		       "parent directory are writable and that the cluster file has not been overwritten externally.";
 	}
 
-	// FIXME: name and description will be the same unless the message is 'incorrect_cluster_file_contents', which is
-	// currently the only possible message
+	// FIXME: name and description will be the same unless the message is 'incorrect_cluster_file_contents', which
+	// is currently the only possible message
 	return name;
 }
 
@@ -2759,7 +2776,8 @@ ACTOR Future<StatusReply> clusterGetStatus(
 		// event requests but still end up in the unreachable set.
 		std::set<std::string> mergeUnreachable;
 
-		// For each (optional) pair, if the pair is present and not empty then add the unreachable workers to the set.
+		// For each (optional) pair, if the pair is present and not empty then add the unreachable workers to the
+		// set.
 		for (auto pair : workerEventsVec) {
 			if (pair.present() && !pair.get().second.empty())
 				mergeUnreachable.insert(pair.get().second.begin(), pair.get().second.end());
@@ -2806,6 +2824,7 @@ ACTOR Future<StatusReply> clusterGetStatus(
 		state std::vector<std::pair<TLogInterface, EventMap>> tLogs;
 		state std::vector<std::pair<CommitProxyInterface, EventMap>> commitProxies;
 		state std::vector<std::pair<GrvProxyInterface, EventMap>> grvProxies;
+		state std::vector<BlobWorkerInterface> blobWorkers;
 		state JsonBuilderObject qos;
 		state JsonBuilderObject data_overlay;
 
@@ -2878,6 +2897,11 @@ ACTOR Future<StatusReply> clusterGetStatus(
 			    errorOr(getCommitProxiesAndMetrics(db, address_workers));
 			state Future<ErrorOr<std::vector<std::pair<GrvProxyInterface, EventMap>>>> grvProxyFuture =
 			    errorOr(getGrvProxiesAndMetrics(db, address_workers));
+			state Future<ErrorOr<std::vector<BlobWorkerInterface>>> blobWorkersFuture;
+
+			if (CLIENT_KNOBS->ENABLE_BLOB_GRANULES) {
+				blobWorkersFuture = errorOr(timeoutError(getBlobWorkers(cx, true), 5.0));
+			}
 
 			state int minStorageReplicasRemaining = -1;
 			state int fullyReplicatedRegions = -1;
@@ -2920,8 +2944,8 @@ ACTOR Future<StatusReply> clusterGetStatus(
 				statusObj["configuration"] = configObj;
 			}
 
-			// workloadStatusFetcher returns the workload section but also optionally writes the qos section and adds to
-			// the data_overlay object
+			// workloadStatusFetcher returns the workload section but also optionally writes the qos section and
+			// adds to the data_overlay object
 			if (!workerStatuses[1].empty())
 				statusObj["workload"] = workerStatuses[1];
 
@@ -2994,6 +3018,18 @@ ACTOR Future<StatusReply> clusterGetStatus(
 				messages.push_back(
 				    JsonBuilder::makeMessage("grv_proxies_error", "Timed out trying to retrieve grv proxies."));
 			}
+
+			// ...also blob workers
+			if (CLIENT_KNOBS->ENABLE_BLOB_GRANULES) {
+				ErrorOr<std::vector<BlobWorkerInterface>> _blobWorkers = wait(blobWorkersFuture);
+				if (_blobWorkers.present()) {
+					blobWorkers = _blobWorkers.get();
+				} else {
+					messages.push_back(
+					    JsonBuilder::makeMessage("blob_workers_error", "Timed out trying to retrieve blob workers."));
+				}
+			}
+
 			wait(waitForAll(warningFutures));
 		} else {
 			// Set layers status to { _valid: false, error: "configurationMissing"}
@@ -3017,6 +3053,7 @@ ACTOR Future<StatusReply> clusterGetStatus(
 		                              tLogs,
 		                              commitProxies,
 		                              grvProxies,
+		                              blobWorkers,
 		                              coordinators,
 		                              cx,
 		                              configuration,

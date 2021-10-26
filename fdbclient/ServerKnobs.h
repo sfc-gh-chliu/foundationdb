@@ -172,6 +172,7 @@ public:
 	double SERVER_LIST_DELAY;
 	double RECRUITMENT_IDLE_DELAY;
 	double STORAGE_RECRUITMENT_DELAY;
+	double BLOB_WORKER_RECRUITMENT_DELAY;
 	bool TSS_HACK_IDENTITY_MAPPING;
 	double TSS_RECRUITMENT_TIMEOUT;
 	double TSS_DD_CHECK_INTERVAL;
@@ -386,6 +387,7 @@ public:
 	double WAIT_FOR_DISTRIBUTOR_JOIN_DELAY;
 	double WAIT_FOR_RATEKEEPER_JOIN_DELAY;
 	double WAIT_FOR_TENANT_BALANCER_JOIN_DELAY;
+	double WAIT_FOR_BLOB_MANAGER_JOIN_DELAY;
 	double WORKER_FAILURE_TIME;
 	double CHECK_OUTSTANDING_INTERVAL;
 	double INCOMPATIBLE_PEERS_LOGGING_INTERVAL;
@@ -398,6 +400,7 @@ public:
 	double FORCE_RECOVERY_CHECK_DELAY;
 	double RATEKEEPER_FAILURE_TIME;
 	double TENANT_BALANCER_FAILURE_TIME;
+	double BLOB_MANAGER_FAILURE_TIME;
 	double REPLACE_INTERFACE_DELAY;
 	double REPLACE_INTERFACE_CHECK_DELAY;
 	double COORDINATOR_REGISTER_INTERVAL;
@@ -724,6 +727,16 @@ public:
 
 	// Tenant Balancer
 	double TENANT_BALANCER_MOVEMENT_RECOVERY_TIMEOUT;
+
+	// blob granule stuff
+	// FIXME: configure url with database configuration instead of knob eventually
+	std::string BG_URL;
+
+	int BG_SNAPSHOT_FILE_TARGET_BYTES;
+	int BG_DELTA_FILE_TARGET_BYTES;
+	int BG_DELTA_BYTES_BEFORE_COMPACT;
+
+	double BLOB_WORKER_TIMEOUT; // Blob Manager's reaction time to a blob worker failure
 
 	ServerKnobs(Randomize, ClientKnobs*, IsSimulated);
 	void initialize(Randomize, ClientKnobs*, IsSimulated);
