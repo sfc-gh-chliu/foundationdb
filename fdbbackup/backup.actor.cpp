@@ -4907,8 +4907,8 @@ int main(int argc, char* argv[]) {
 					}
 				}
 
-				f = stopAfter(abortDBMove(sourceDb,
-				                          db,
+				f = stopAfter(abortDBMove(canInitSourceCluster ? sourceDb : Optional<Database>(),
+				                          canInitCluster ? db : Optional<Database>(),
 				                          prefix.map<Key>([](auto s) { return Key(s); }),
 				                          destinationPrefix.map<Key>([](auto s) { return Key(s); })));
 				break;

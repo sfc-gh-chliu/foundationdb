@@ -84,7 +84,7 @@ public:
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, id, sourcePrefix, destinationPrefix, peerDatabaseName);
+		serializer(ar, id, movementState, movementLocation, sourcePrefix, destinationPrefix, peerDatabaseName, errorMessage, switchVersion);
 	}
 
 	Key getKey() const {
@@ -362,17 +362,21 @@ struct TenantBalancer {
 						self->outgoingMovements[record.getSourcePrefix()] = record;
 
 						TraceEvent(SevDebug, "TenantBalancerRecoverSourceMove", self->tbi.id())
+						    .detail("MovementId", record.getMovementId())
 						    .detail("SourcePrefix", record.getSourcePrefix())
 						    .detail("DestinationPrefix", record.getDestinationPrefix())
-						    .detail("DatabaseName", record.getPeerDatabaseName());
+						    .detail("DatabaseName", record.getPeerDatabaseName())
+						    .detail("MovementState", record.movementState);
 					} else if (kv.key.startsWith(tenantBalancerDestinationMovementPrefix)) {
 						MovementRecord record = MovementRecord::fromValue(kv.value);
 
 						self->incomingMovements[record.getSourcePrefix()] = record;
 						TraceEvent(SevDebug, "TenantBalancerRecoverDestinationMove", self->tbi.id())
+						    .detail("MovementId", record.getMovementId())
 						    .detail("SourcePrefix", record.getSourcePrefix())
 						    .detail("DestinationPrefix", record.getDestinationPrefix())
-						    .detail("DatabaseName", record.getPeerDatabaseName());
+						    .detail("DatabaseName", record.getPeerDatabaseName())
+						    .detail("MovementState", record.movementState);
 					} else if (kv.key.startsWith(tenantBalancerExternalDatabasePrefix)) {
 						std::string name = kv.key.removePrefix(tenantBalancerExternalDatabasePrefix).toString();
 						Database db = Database::createDatabase(
