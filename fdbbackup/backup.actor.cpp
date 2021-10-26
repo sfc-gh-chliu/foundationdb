@@ -4854,12 +4854,18 @@ int main(int argc, char* argv[]) {
 					fprintf(stderr, "ERROR: -s and -d are required\n");
 					return FDB_EXIT_ERROR;
 				}
-
 				if (!prefix.present()) {
 					fprintf(stderr, "ERROR: --prefix is required\n");
 					return FDB_EXIT_ERROR;
 				} else if (!destinationPrefix.present()) {
 					destinationPrefix = prefix;
+				}
+				if (sourceClusterFile == clusterFile &&
+				    (!destinationPrefix.present() || prefix.get() == destinationPrefix.get())) {
+					fprintf(stderr,
+					        "ERROR: --prefix and --destination_prefix cannot be the same if -s and -d are the same "
+					        "cluster\n");
+					return FDB_EXIT_ERROR;
 				}
 
 				f = stopAfter(submitDBMove(sourceDb, db, Key(prefix.get()), Key(destinationPrefix.get())));
