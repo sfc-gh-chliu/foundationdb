@@ -2247,7 +2247,7 @@ ACTOR Future<Void> fetchAndDisplayDBMove(Database db,
 			for (int i = 0; i < activeMovements.size(); ++i) {
 				printf("%d. %s\n", i + 1, activeMovements[i].movementId.toString().c_str());
 				if (locationFilter == MovementLocation::SOURCE) {
-					printf("  Prefix: %s\n", printable(activeMovements[i].destinationPrefix).c_str());
+					printf("  Prefix: %s\n", printable(activeMovements[i].sourcePrefix).c_str());
 					if (!peerDatabaseConnectionStringFilter.present()) {
 						printf("  Destination cluster: %s\n", activeMovements[i].peerConnectionString.c_str());
 					}
