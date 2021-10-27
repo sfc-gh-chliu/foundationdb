@@ -2164,7 +2164,6 @@ ACTOR Future<Void> submitDBMove(Database src, Database dest, Key srcPrefix, Key 
 			throw;
 
 		fprintf(stderr, "ERROR: %s\n", e.what());
-		throw backup_error();
 	}
 
 	return Void();

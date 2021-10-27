@@ -804,13 +804,25 @@ ACTOR Future<Void> moveTenantToCluster(TenantBalancer* self, MoveTenantToCluster
 	++self->moveTenantToClusterRequests;
 
 	try {
-		// Check if there is any existed same movement record
-		if (self->getOutgoingMovements().count(req.sourcePrefix)) {
-			TraceEvent(SevWarn, "TenantBalancerMoveAlreadyInProgress")
+		// Check if there are any conflicting movements. A conflicting movement would be one that is a prefix of our
+		// requested movement or that is contained within our requested movement.
+		auto movementItr = self->getOutgoingMovements().upper_bound(req.sourcePrefix);
+		if (movementItr != self->getOutgoingMovements().end() && movementItr->first.startsWith(req.sourcePrefix)) {
+			TraceEvent(SevWarn, "TenantBalancerMoveConflict")
+			    .detail("ConflictingPrefix", movementItr->first)
 			    .detail("SourcePrefix", req.sourcePrefix)
 			    .detail("DestinationPrefix", req.destPrefix)
 			    .detail("DestinationConnectionString", req.destConnectionString);
-			throw movement_in_progress();
+			throw movement_conflict();
+		}
+		if (movementItr != self->getOutgoingMovements().begin() &&
+		    req.sourcePrefix.startsWith((--movementItr)->first)) {
+			TraceEvent(SevWarn, "TenantBalancerMoveConflict")
+			    .detail("ConflictingPrefix", movementItr->first)
+			    .detail("SourcePrefix", req.sourcePrefix)
+			    .detail("DestinationPrefix", req.destPrefix)
+			    .detail("DestinationConnectionString", req.destConnectionString);
+			throw movement_conflict();
 		}
 
 		state Optional<Database> destDatabase;
@@ -876,6 +888,26 @@ ACTOR Future<Void> receiveTenantFromCluster(TenantBalancer* self, ReceiveTenantF
 	++self->receiveTenantFromClusterRequests;
 
 	try {
+		// Check if there are any conflicting movements. A conflicting movement would be one that is a prefix of our
+		// requested movement or that is contained within our requested movement.
+		auto movementItr = self->getIncomingMovements().upper_bound(req.destPrefix);
+		if (movementItr != self->getIncomingMovements().end() && movementItr->first.startsWith(req.destPrefix)) {
+			TraceEvent(SevWarn, "TenantBalancerMoveConflict")
+			    .detail("ConflictingPrefix", movementItr->first)
+			    .detail("SourcePrefix", req.sourcePrefix)
+			    .detail("DestinationPrefix", req.destPrefix)
+			    .detail("SourceConnectionString", req.srcConnectionString);
+			throw movement_conflict();
+		}
+		if (movementItr != self->getIncomingMovements().begin() && req.destPrefix.startsWith((--movementItr)->first)) {
+			TraceEvent(SevWarn, "TenantBalancerMoveConflict")
+			    .detail("ConflictingPrefix", movementItr->first)
+			    .detail("SourcePrefix", req.sourcePrefix)
+			    .detail("DestinationPrefix", req.destPrefix)
+			    .detail("SourceConnectionString", req.srcConnectionString);
+			throw movement_conflict();
+		}
+
 		state Optional<Database> srcDatabase;
 		state std::string databaseName = req.srcConnectionString;
 		loop {
