@@ -4917,7 +4917,7 @@ int main(int argc, char* argv[]) {
 					destinationPrefix = prefix;
 				}
 
-				// TODO check if the two different cluster files are actually belongs to one single file
+				// TODO check if the two different cluster files actually connect to the same cluster
 				if (sourceClusterFile == clusterFile) {
 					if (!destinationPrefix.present() || prefix.get() == destinationPrefix.get()) {
 						fprintf(stderr,
