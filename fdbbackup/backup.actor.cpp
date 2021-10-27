@@ -4917,8 +4917,8 @@ int main(int argc, char* argv[]) {
 					destinationPrefix = prefix;
 				}
 
+				// TODO check if the two different cluster files are actually belongs to one single file
 				if (sourceClusterFile == clusterFile) {
-					// TODO support
 					if (!destinationPrefix.present() || prefix.get() == destinationPrefix.get()) {
 						fprintf(stderr,
 						        "ERROR: --prefix and --destination_prefix cannot be the same if -s and -d are the same "
@@ -4926,7 +4926,7 @@ int main(int argc, char* argv[]) {
 						return FDB_EXIT_ERROR;
 					} else {
 						// TODO support data movement in single cluster with different prefixes.
-						fprintf(stderr, "ERROR: movements inside single cluster are not supported right now\n");
+						fprintf(stderr, "ERROR: movements inside a single cluster are currently unsupported\n");
 						return FDB_EXIT_ERROR;
 					}
 				}
