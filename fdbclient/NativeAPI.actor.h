@@ -439,6 +439,7 @@ ACTOR Future<Standalone<VectorRef<DDMetricsRef>>> waitDataDistributionMetricsLis
                                                                                   int shardLimit);
 
 std::string unprintable(const std::string&);
+Optional<std::string> tryUnprintable(const std::string&);
 
 int64_t extractIntOption(Optional<StringRef> value,
                          int64_t minValue = std::numeric_limits<int64_t>::min(),

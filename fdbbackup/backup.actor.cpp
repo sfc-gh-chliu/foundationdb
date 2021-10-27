@@ -1535,10 +1535,13 @@ static void printDBMovementUsage(bool devhelp) {
 	       "                 Has no effect unless --log is specified.\n");
 	printf("  -h, --help     Display this help and exit.\n");
 	printf("  --prefix PREFIX\n");
-	printf("                 The prefix to move.\n");
+	printf("                 The prefix to move. Unprintable characters can be expressed with their\n"
+	       "                 hexadecimal encodings using \\xNN (e.g. `\\x00'). Backslashes should be\n"
+	       "                 escaped with an extra backslash (`\\\\').\n");
 	printf("  --destination_prefix PREFIX\n");
 	printf("                 If specified, the data will be written into the new cluster with the original\n"
-	       "                 prefix replaced by the specified prefix.\n");
+	       "                 prefix replaced by the specified prefix. Prefixes can be escaped in the same\n"
+	       "                 way as --prefix.\n");
 	printf("\n"
 	       "  KEYS FORMAT:   \"<BEGINKEY> <ENDKEY>\" [...]\n");
 	if (devhelp) {
@@ -4223,12 +4226,26 @@ int main(int argc, char* argv[]) {
 			case OPT_PREFIX_REMOVE:
 				removePrefix = args->OptionArg();
 				break;
-			case OPT_PREFIX:
-				prefix = args->OptionArg();
+			case OPT_PREFIX: {
+				const char* prefixArg = args->OptionArg();
+				prefix = tryUnprintable(prefixArg);
+				if (!prefix.present()) {
+					fprintf(stderr, "ERROR: Could not parse prefix `%s'\n", prefixArg);
+					printHelpTeaser(argv[0]);
+					return FDB_EXIT_ERROR;
+				}
 				break;
-			case OPT_DESTINATION_PREFIX:
-				destinationPrefix = args->OptionArg();
+			}
+			case OPT_DESTINATION_PREFIX: {
+				const char* destinationPrefixArg = args->OptionArg();
+				destinationPrefix = tryUnprintable(destinationPrefixArg);
+				if (!destinationPrefix.present()) {
+					fprintf(stderr, "ERROR: Could not parse destination prefix `%s'\n", destinationPrefixArg);
+					printHelpTeaser(argv[0]);
+					return FDB_EXIT_ERROR;
+				}
 				break;
+			}
 			case OPT_ERRORLIMIT: {
 				const char* a = args->OptionArg();
 				if (!sscanf(a, "%d", &maxErrors)) {
