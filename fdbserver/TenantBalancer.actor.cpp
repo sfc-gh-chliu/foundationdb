@@ -182,6 +182,18 @@ Future<Result> runTenantBalancerTransaction(Database db,
 	}
 }
 
+ACTOR Future<bool> insertDbKey(Reference<ReadYourWritesTransaction> tr, Key dbKey, Value dbValue) {
+	Optional<Value> existingValue = wait(tr->get(dbKey));
+	if (existingValue.present() && existingValue.get() != dbValue) {
+		return false;
+	}
+
+	tr->set(dbKey, dbValue);
+	wait(tr->commit());
+
+	return true;
+}
+
 struct TenantBalancer {
 	TenantBalancer(TenantBalancerInterface tbi,
 	               Reference<AsyncVar<ServerDBInfo> const> dbInfo,
@@ -275,7 +287,6 @@ struct TenantBalancer {
 			ASSERT(false);
 		}
 
-		self->externalDatabases.addDatabaseRef(record->getPeerDatabaseName());
 		TraceEvent(SevDebug, "SaveMovementSuccess", self->tbi.id())
 		    .detail("MovementId", record->getMovementId())
 		    .detail("MovementLocation",
@@ -287,6 +298,132 @@ struct TenantBalancer {
 	}
 
 	Future<Void> saveMovementRecord(MovementRecord const& record) { return saveMovementRecordImpl(this, &record); }
+	ACTOR Future<MovementRecord> createAndGetMovementRecordImpl(TenantBalancer* self,
+	                                                            MovementLocation location,
+	                                                            Key sourcePrefix,
+	                                                            Key destPrefix,
+	                                                            std::string peerConnectionString) {
+		state Database peerDb;
+		state std::string databaseName = peerConnectionString;
+
+		state std::map<Key, MovementRecord>& movements =
+		    location == MovementLocation::SOURCE ? self->outgoingMovements : self->incomingMovements;
+		state Key prefix = location == MovementLocation::SOURCE ? sourcePrefix : destPrefix;
+
+		loop {
+			Optional<Database> db = wait(self->getOrInsertDatabase(peerConnectionString, peerConnectionString));
+			if (db.present()) {
+				peerDb = db.get();
+				break;
+			}
+
+			// This will generate a unique random database name, so we won't get the benefits of sharing
+			databaseName = peerConnectionString + "/" + deterministicRandom()->randomUniqueID().toString();
+			TraceEvent(SevDebug, "TenantBalancerCreateDatabaseUniqueNameFallback", self->tbi.id())
+			    .detail("ConnectionString", peerConnectionString)
+			    .detail("DatabaseName", databaseName);
+		}
+
+		// Check if there are any conflicting movements. A conflicting movement would be one that is a prefix of our
+		// requested movement or that is contained within our requested movement.
+		auto movementItr = movements.upper_bound(prefix);
+		if (movementItr != movements.end() && movementItr->first.startsWith(prefix)) {
+			TraceEvent(SevWarn, "TenantBalancerMoveConflict", self->tbi.id())
+			    .detail("ConflictingPrefix", movementItr->first)
+			    .detail("SourcePrefix", sourcePrefix)
+			    .detail("DestinationPrefix", destPrefix)
+			    .detail("PeerConnectionString", peerConnectionString)
+			    .detail("MovementLocation", TenantBalancerInterface::movementLocationToString(location));
+			throw movement_conflict();
+		}
+		if (movementItr != movements.begin() && prefix.startsWith((--movementItr)->first)) {
+			TraceEvent(SevWarn, "TenantBalancerMoveConflict", self->tbi.id())
+			    .detail("ConflictingPrefix", movementItr->first)
+			    .detail("SourcePrefix", sourcePrefix)
+			    .detail("DestinationPrefix", destPrefix)
+			    .detail("PeerConnectionString", peerConnectionString)
+			    .detail("MovementLocation", TenantBalancerInterface::movementLocationToString(location));
+			throw movement_conflict();
+		}
+
+		// Insert the record before persisting to prevent conflicting record creations
+		state MovementRecord record(location, sourcePrefix, destPrefix, peerConnectionString, peerDb);
+		movements[prefix] = record;
+
+		try {
+			wait(self->saveMovementRecord(record));
+			self->externalDatabases.addDatabaseRef(databaseName);
+		} catch (Error& e) {
+			TraceEvent(SevWarn, "TenantBalancerErrorCreatingMovementRecord", self->tbi.id())
+			    .error(e)
+			    .detail("SourcePrefix", sourcePrefix)
+			    .detail("DestinationPrefix", destPrefix)
+			    .detail("PeerConnectionString", peerConnectionString)
+			    .detail("MovementLocation", TenantBalancerInterface::movementLocationToString(location));
+
+			movements.erase(prefix);
+			throw;
+		}
+
+		return record;
+	}
+
+	Future<MovementRecord> createAndGetMovementRecord(MovementLocation location,
+	                                                  Key sourcePrefix,
+	                                                  Key destPrefix,
+	                                                  std::string peerConnectionString) {
+		return createAndGetMovementRecordImpl(this, location, sourcePrefix, destPrefix, peerConnectionString);
+	}
+
+	ACTOR static Future<Optional<Database>> getOrInsertDatabaseImpl(TenantBalancer* self,
+	                                                                std::string name,
+	                                                                std::string connectionString) {
+		Optional<Database> existingDb = self->externalDatabases.get(name);
+		if (existingDb.present()) {
+			if (existingDb.get()->getConnectionRecord()->getConnectionString().toString() == connectionString) {
+				return existingDb;
+			}
+			return Optional<Database>();
+		}
+
+		self->externalDatabases.cancelCleanup(name);
+
+		state Key dbKey = KeyRef(name).withPrefix(tenantBalancerExternalDatabasePrefix);
+		Key dbKeyCapture = dbKey;
+		Value dbValue = ValueRef(connectionString);
+
+		bool inserted =
+		    wait(runTenantBalancerTransaction<bool>(self->db,
+		                                            self->tbi.id(),
+		                                            "GetOrInsertDatabase",
+		                                            [dbKeyCapture, dbValue](Reference<ReadYourWritesTransaction> tr) {
+			                                            return insertDbKey(tr, dbKeyCapture, dbValue);
+		                                            }));
+
+		if (!inserted) {
+			return Optional<Database>();
+		}
+
+		Database db = Database::createDatabase(
+		    makeReference<ClusterConnectionKey>(self->db, dbKey, ClusterConnectionString(connectionString)),
+		    Database::API_VERSION_LATEST,
+		    IsInternal::True,
+		    self->tbi.locality);
+
+		if (!self->externalDatabases.insert(name, db)) {
+			Optional<Database> collision = self->externalDatabases.get(name);
+			ASSERT(collision.present() &&
+			       collision.get()->getConnectionRecord()->getConnectionString().toString() == connectionString);
+
+			return collision.get();
+		}
+
+		return db;
+	}
+
+	Future<Optional<Database>> getOrInsertDatabase(std::string name, std::string connectionString) {
+		return getOrInsertDatabaseImpl(this, name, connectionString);
+	}
 
 	Future<Void> clearExternalDatabase(std::string databaseName) {
 		Key key = KeyRef(databaseName).withPrefix(tenantBalancerExternalDatabasePrefix);
@@ -611,18 +748,6 @@ ACTOR Future<bool> checkForActiveDr(TenantBalancer* self, MovementRecord const* 
 	       backupState == EBackupState::STATE_RUNNING_DIFFERENTIAL;
 }
 
-ACTOR Future<bool> insertDbKey(Reference<ReadYourWritesTransaction> tr, Key dbKey, Value dbValue) {
-	Optional<Value> existingValue = wait(tr->get(dbKey));
-	if (existingValue.present() && existingValue.get() != dbValue) {
-		return false;
-	}
-
-	tr->set(dbKey, dbValue);
-	wait(tr->commit());
-
-	return true;
-}
-
 // Returns a new movement state based on the current movement state and DR state. If the movement state is an error,
 // also includes an error message. In the event that the movement state should not change, return an empty Optional.
 Optional<std::pair<MovementState, std::string>> drStateToMovementState(MovementState startingMovementState,
@@ -666,52 +791,6 @@ bool updateMovementRecordWithDrState(TenantBalancer* self,
 	}
 
 	return true;
-}
-
-ACTOR Future<Optional<Database>> getOrInsertDatabase(TenantBalancer* self,
-                                                     std::string name,
-                                                     std::string connectionString) {
-	Optional<Database> existingDb = self->externalDatabases.get(name);
-	if (existingDb.present()) {
-		if (existingDb.get()->getConnectionRecord()->getConnectionString().toString() == connectionString) {
-			return existingDb;
-		}
-		return Optional<Database>();
-	}
-
-	self->externalDatabases.cancelCleanup(name);
-
-	state Key dbKey = KeyRef(name).withPrefix(tenantBalancerExternalDatabasePrefix);
-	Key dbKeyCapture = dbKey;
-	Value dbValue = ValueRef(connectionString);
-
-	bool inserted =
-	    wait(runTenantBalancerTransaction<bool>(self->db,
-	                                            self->tbi.id(),
-	                                            "GetOrInsertDatabase",
-	                                            [dbKeyCapture, dbValue](Reference<ReadYourWritesTransaction> tr) {
-		                                            return insertDbKey(tr, dbKeyCapture, dbValue);
-	                                            }));
-
-	if (!inserted) {
-		return Optional<Database>();
-	}
-
-	Database db = Database::createDatabase(
-	    makeReference<ClusterConnectionKey>(self->db, dbKey, ClusterConnectionString(connectionString)),
-	    Database::API_VERSION_LATEST,
-	    IsInternal::True,
-	    self->tbi.locality);
-
-	if (!self->externalDatabases.insert(name, db)) {
-		Optional<Database> collision = self->externalDatabases.get(name);
-		ASSERT(collision.present() &&
-		       collision.get()->getConnectionRecord()->getConnectionString().toString() == connectionString);
-
-		return collision.get();
-	}
-
-	return db;
 }
 
 ACTOR Future<ReceiveTenantFromClusterReply> startSourceMovement(TenantBalancer* self,
@@ -804,55 +883,15 @@ ACTOR Future<Void> moveTenantToCluster(TenantBalancer* self, MoveTenantToCluster
 	++self->moveTenantToClusterRequests;
 
 	try {
-		// Check if there are any conflicting movements. A conflicting movement would be one that is a prefix of our
-		// requested movement or that is contained within our requested movement.
-		auto movementItr = self->getOutgoingMovements().upper_bound(req.sourcePrefix);
-		if (movementItr != self->getOutgoingMovements().end() && movementItr->first.startsWith(req.sourcePrefix)) {
-			TraceEvent(SevWarn, "TenantBalancerMoveConflict")
-			    .detail("ConflictingPrefix", movementItr->first)
-			    .detail("SourcePrefix", req.sourcePrefix)
-			    .detail("DestinationPrefix", req.destPrefix)
-			    .detail("DestinationConnectionString", req.destConnectionString);
-			throw movement_conflict();
-		}
-		if (movementItr != self->getOutgoingMovements().begin() &&
-		    req.sourcePrefix.startsWith((--movementItr)->first)) {
-			TraceEvent(SevWarn, "TenantBalancerMoveConflict")
-			    .detail("ConflictingPrefix", movementItr->first)
-			    .detail("SourcePrefix", req.sourcePrefix)
-			    .detail("DestinationPrefix", req.destPrefix)
-			    .detail("DestinationConnectionString", req.destConnectionString);
-			throw movement_conflict();
-		}
-
-		state Optional<Database> destDatabase;
-		state std::string databaseName = req.destConnectionString;
-
-		loop {
-			Optional<Database> db = wait(getOrInsertDatabase(self, req.destConnectionString, req.destConnectionString));
-			if (db.present()) {
-				destDatabase = db;
-				break;
-			}
-
-			// This will generate a unique random database name, so we won't get the benefits of sharing
-			databaseName = req.destConnectionString + "/" + deterministicRandom()->randomUniqueID().toString();
-			TraceEvent(SevDebug, "TenantBalancerCreateDatabaseUniqueNameFallback", self->tbi.id())
-			    .detail("ConnectionString", req.destConnectionString)
-			    .detail("DatabaseName", databaseName);
-		}
-
-		state MovementRecord record(
-		    MovementLocation::SOURCE, req.sourcePrefix, req.destPrefix, req.destConnectionString, destDatabase.get());
-
-		wait(self->saveMovementRecord(record));
+		state MovementRecord record = wait(self->createAndGetMovementRecord(
+		    MovementLocation::SOURCE, req.sourcePrefix, req.destPrefix, req.destConnectionString));
 
 		// Start the movement
 		state ReceiveTenantFromClusterReply replyFromDestinationDatabase =
 		    wait(startSourceMovement(self, &record, true));
 
 		// Check if a DR agent is running to process the move
-		state bool agentRunning = wait(self->agent.checkActive(destDatabase.get()));
+		state bool agentRunning = wait(self->agent.checkActive(record.getPeerDatabase()));
 		if (!agentRunning) {
 			throw movement_agent_not_running();
 		}
@@ -888,56 +927,17 @@ ACTOR Future<Void> receiveTenantFromCluster(TenantBalancer* self, ReceiveTenantF
 	++self->receiveTenantFromClusterRequests;
 
 	try {
-		// Check if there are any conflicting movements. A conflicting movement would be one that is a prefix of our
-		// requested movement or that is contained within our requested movement.
-		auto movementItr = self->getIncomingMovements().upper_bound(req.destPrefix);
-		if (movementItr != self->getIncomingMovements().end() && movementItr->first.startsWith(req.destPrefix)) {
-			TraceEvent(SevWarn, "TenantBalancerMoveConflict")
-			    .detail("ConflictingPrefix", movementItr->first)
-			    .detail("SourcePrefix", req.sourcePrefix)
-			    .detail("DestinationPrefix", req.destPrefix)
-			    .detail("SourceConnectionString", req.srcConnectionString);
-			throw movement_conflict();
-		}
-		if (movementItr != self->getIncomingMovements().begin() && req.destPrefix.startsWith((--movementItr)->first)) {
-			TraceEvent(SevWarn, "TenantBalancerMoveConflict")
-			    .detail("ConflictingPrefix", movementItr->first)
-			    .detail("SourcePrefix", req.sourcePrefix)
-			    .detail("DestinationPrefix", req.destPrefix)
-			    .detail("SourceConnectionString", req.srcConnectionString);
-			throw movement_conflict();
-		}
-
-		state Optional<Database> srcDatabase;
-		state std::string databaseName = req.srcConnectionString;
-		loop {
-			Optional<Database> db = wait(getOrInsertDatabase(self, req.srcConnectionString, req.srcConnectionString));
-			if (db.present()) {
-				srcDatabase = db;
-				break;
-			}
-
-			// This will generate a unique random database name, so we won't get the benefits of sharing
-			databaseName = req.srcConnectionString + "/" + deterministicRandom()->randomUniqueID().toString();
-			TraceEvent(SevDebug, "TenantBalancerCreateDatabaseUniqueNameFallback", self->tbi.id())
-			    .detail("ConnectionString", req.srcConnectionString)
-			    .detail("DatabaseName", databaseName);
-		}
-
 		state MovementRecord destinationMovementRecord;
 		try {
 			destinationMovementRecord = self->getIncomingMovement(req.destPrefix, req.movementId);
 		} catch (Error& e) {
+			state Error getMovementError = e;
 			if (e.code() == error_code_movement_not_found) {
-				destinationMovementRecord = MovementRecord(req.movementId,
-				                                           MovementLocation::DEST,
-				                                           req.sourcePrefix,
-				                                           req.destPrefix,
-				                                           req.srcConnectionString,
-				                                           srcDatabase.get());
-
+				MovementRecord r = wait(self->createAndGetMovementRecord(
+				    MovementLocation::DEST, req.sourcePrefix, req.destPrefix, req.srcConnectionString));
+				destinationMovementRecord = r;
 			} else {
-				throw;
+				throw getMovementError;
 			}
 		}
 
