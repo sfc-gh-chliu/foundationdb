@@ -4905,7 +4905,7 @@ int main(int argc, char* argv[]) {
 		case ProgramExe::DB_MOVE:
 			switch (dbMoveType) {
 			case DBMoveType::START:
-				if (!initCluster() || !initSourceCluster(true)) {
+				if (!initCluster(true) || !initSourceCluster(true, true)) {
 					fprintf(stderr, "ERROR: -s and -d are required\n");
 					return FDB_EXIT_ERROR;
 				}
@@ -4917,10 +4917,24 @@ int main(int argc, char* argv[]) {
 					destinationPrefix = prefix;
 				}
 
+				if (sourceClusterFile == clusterFile) {
+					// TODO support
+					if (!destinationPrefix.present() || prefix.get() == destinationPrefix.get()) {
+						fprintf(stderr,
+						        "ERROR: --prefix and --destination_prefix cannot be the same if -s and -d are the same "
+						        "cluster\n");
+						return FDB_EXIT_ERROR;
+					} else {
+						// TODO support data movement in single cluster with different prefixes.
+						fprintf(stderr, "ERROR: movements inside single cluster are not supported right now\n");
+						return FDB_EXIT_ERROR;
+					}
+				}
+
 				f = stopAfter(submitDBMove(sourceDb, db, Key(prefix.get()), Key(destinationPrefix.get())));
 				break;
 			case DBMoveType::STATUS: {
-				bool canInitCluster = initCluster();
+				bool canInitCluster = initCluster(true);
 				bool canInitSourceCluster = initSourceCluster(true, true);
 				if (!canInitCluster && !canInitSourceCluster) {
 					fprintf(stderr, "ERROR: -s or -d is required\n");
@@ -4948,7 +4962,7 @@ int main(int argc, char* argv[]) {
 				break;
 			}
 			case DBMoveType::FINISH:
-				if (!initSourceCluster(true)) {
+				if (!initSourceCluster(true, true)) {
 					fprintf(stderr, "ERROR: -s is required\n");
 					return FDB_EXIT_ERROR;
 				}
@@ -4961,7 +4975,7 @@ int main(int argc, char* argv[]) {
 				f = stopAfter(finishDBMove(sourceDb, Key(prefix.get()), maxLagSec));
 				break;
 			case DBMoveType::ABORT: {
-				bool canInitCluster = initCluster();
+				bool canInitCluster = initCluster(true);
 				bool canInitSourceCluster = initSourceCluster(true, true);
 				if (!canInitCluster && !canInitSourceCluster) {
 					fprintf(stderr, "ERROR: -s and/or -d are required\n");
@@ -4988,7 +5002,7 @@ int main(int argc, char* argv[]) {
 				break;
 			}
 			case DBMoveType::CLEAN:
-				if (!initSourceCluster(true)) {
+				if (!initSourceCluster(true, true)) {
 					fprintf(stderr, "ERROR: -s or --source is required\n");
 					return FDB_EXIT_ERROR;
 				}
