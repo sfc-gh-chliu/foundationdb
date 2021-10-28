@@ -124,11 +124,8 @@ public:
 
 	void abort() {
 		if (!abortPromise.isSet()) {
-			TraceEvent(SevDebug, "TenantBalancerAbortMovement").detail("MovementId", id.toString());
 			abortPromise.sendError(movement_aborted());
-			return;
 		}
-		TraceEvent(SevDebug, "TenantBalancerHasBeenAborted").detail("MovementId", id.toString());
 	}
 
 	Future<Void> onAbort() { return abortPromise.getFuture(); }
@@ -1301,7 +1298,6 @@ ACTOR Future<Void> finishSourceMovement(TenantBalancer* self, FinishSourceMoveme
 		    .error(e)
 		    .detail("SourcePrefix", req.sourcePrefix)
 		    .detail("MaxLagSeconds", req.maxLagSeconds);
-		// TODO, if the source tenant is locked, should we unlock the tenant here?
 		req.reply.sendError(e);
 	}
 
