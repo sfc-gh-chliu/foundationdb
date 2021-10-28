@@ -766,7 +766,6 @@ ACTOR Future<bool> checkForActiveDr(TenantBalancer* self, MovementRecord const* 
 Optional<std::pair<MovementState, std::string>> drStateToMovementState(MovementState startingMovementState,
                                                                        EBackupState drState) {
 	if (startingMovementState == MovementState::STARTED && drState == EBackupState::STATE_RUNNING_DIFFERENTIAL) {
-		startingMovementState = MovementState::READY_FOR_SWITCH;
 		return std::make_pair(MovementState::READY_FOR_SWITCH, "");
 	} else if (startingMovementState != MovementState::COMPLETED &&
 	           (drState == EBackupState::STATE_ABORTED || drState == EBackupState::STATE_PARTIALLY_ABORTED)) {
