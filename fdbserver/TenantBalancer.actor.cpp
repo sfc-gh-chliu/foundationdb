@@ -122,6 +122,17 @@ public:
 
 	Optional<std::string> getErrorMessage() const { return errorMessage; }
 
+	void abort() {
+		if (!abortPromise.isSet()) {
+			TraceEvent(SevDebug, "TenantBalancerAbortMovement").detail("MovementId", id.toString());
+			abortPromise.sendError(movement_aborted());
+			return;
+		}
+		TraceEvent(SevDebug, "TenantBalancerHasBeenAborted").detail("MovementId", id.toString());
+	}
+
+	Future<Void> onAbort() { return abortPromise.getFuture(); }
+
 	MovementState movementState = MovementState::INITIALIZING;
 	Version switchVersion = invalidVersion;
 
@@ -136,6 +147,8 @@ private:
 	std::string peerDatabaseName;
 	Database peerDatabase;
 	Optional<std::string> errorMessage;
+
+	Promise<Void> abortPromise;
 };
 
 ACTOR static Future<Void> extractClientInfo(Reference<AsyncVar<ServerDBInfo> const> dbInfo,
@@ -799,13 +812,15 @@ ACTOR Future<ReceiveTenantFromClusterReply> startSourceMovement(TenantBalancer* 
 	// Send a request to the destination database to prepare for the move
 	state ReceiveTenantFromClusterReply reply;
 	try {
-		ReceiveTenantFromClusterReply r = wait(sendTenantBalancerRequest(
-		    record->getPeerDatabase(),
-		    ReceiveTenantFromClusterRequest(record->getMovementId(),
-		                                    record->getSourcePrefix(),
-		                                    record->getDestinationPrefix(),
-		                                    self->connRecord->getConnectionString().toString()),
-		    &TenantBalancerInterface::receiveTenantFromCluster));
+		ReceiveTenantFromClusterReply r =
+		    wait(waitOrError(sendTenantBalancerRequest(
+		                         record->getPeerDatabase(),
+		                         ReceiveTenantFromClusterRequest(record->getMovementId(),
+		                                                         record->getSourcePrefix(),
+		                                                         record->getDestinationPrefix(),
+		                                                         self->connRecord->getConnectionString().toString()),
+		                         &TenantBalancerInterface::receiveTenantFromCluster),
+		                     record->onAbort()));
 
 		reply = r;
 	} catch (Error& e) {
@@ -824,13 +839,14 @@ ACTOR Future<ReceiveTenantFromClusterReply> startSourceMovement(TenantBalancer* 
 	bool replacePrefix = record->getSourcePrefix() != record->getDestinationPrefix();
 
 	try {
-		wait(self->agent.submitBackup(record->getPeerDatabase(),
-		                              record->getTagName(),
-		                              backupRanges,
-		                              StopWhenDone::False,
-		                              replacePrefix ? record->getDestinationPrefix() : StringRef(),
-		                              replacePrefix ? record->getSourcePrefix() : StringRef(),
-		                              LockDB::False));
+		wait(waitOrError(self->agent.submitBackup(record->getPeerDatabase(),
+		                                          record->getTagName(),
+		                                          backupRanges,
+		                                          StopWhenDone::False,
+		                                          replacePrefix ? record->getDestinationPrefix() : StringRef(),
+		                                          replacePrefix ? record->getSourcePrefix() : StringRef(),
+		                                          LockDB::False),
+		                 record->onAbort()));
 	} catch (Error& e) {
 		state Error submitErr = e;
 
@@ -869,7 +885,7 @@ ACTOR Future<ReceiveTenantFromClusterReply> startSourceMovement(TenantBalancer* 
 
 	// Update the state of the movement to started
 	record->movementState = MovementState::STARTED;
-	wait(self->saveMovementRecord(*record));
+	wait(waitOrError(self->saveMovementRecord(*record), record->onAbort()));
 
 	return reply;
 }
@@ -949,13 +965,13 @@ ACTOR Future<Void> receiveTenantFromCluster(TenantBalancer* self, ReceiveTenantF
 				throw movement_dest_prefix_not_empty();
 			}
 
-			wait(self->saveMovementRecord(destinationMovementRecord));
+			wait(waitOrError(self->saveMovementRecord(destinationMovementRecord), destinationMovementRecord.onAbort()));
 
 			// TODO: Lock the destination before we start the movement
 
 			// Update record
 			destinationMovementRecord.movementState = MovementState::STARTED;
-			wait(self->saveMovementRecord(destinationMovementRecord));
+			wait(waitOrError(self->saveMovementRecord(destinationMovementRecord), destinationMovementRecord.onAbort()));
 		}
 
 		TraceEvent(SevDebug, "TenantBalancerReceiveTenantFromClusterComplete", self->tbi.id())
@@ -1199,14 +1215,15 @@ Future<Version> lockSourceTenant(TenantBalancer* self, Key prefix) {
 }
 
 ACTOR Future<Void> sendFinishRequestToDestination(TenantBalancer* self, MovementRecord* record) {
-	FinishDestinationMovementReply destinationReply = wait(
+	FinishDestinationMovementReply destinationReply = wait(waitOrError(
 	    sendTenantBalancerRequest(record->getPeerDatabase(),
 	                              FinishDestinationMovementRequest(
 	                                  record->getMovementId(), record->getDestinationPrefix(), record->switchVersion),
-	                              &TenantBalancerInterface::finishDestinationMovement));
+	                              &TenantBalancerInterface::finishDestinationMovement),
+	    record->onAbort()));
 
 	record->movementState = MovementState::COMPLETED;
-	wait(self->saveMovementRecord(*record));
+	wait(waitOrError(self->saveMovementRecord(*record), record->onAbort()));
 	wait(abortPeer(self, *record));
 
 	return Void();
@@ -1223,7 +1240,8 @@ ACTOR Future<Void> finishSourceMovement(TenantBalancer* self, FinishSourceMoveme
 
 	try {
 		state MovementRecord record = self->getOutgoingMovement(req.sourcePrefix);
-		state TenantMovementStatus movementStatus = wait(getStatusAndUpdateMovementRecord(self, &record));
+		state TenantMovementStatus movementStatus =
+		    wait(waitOrError(getStatusAndUpdateMovementRecord(self, &record), record.onAbort()));
 
 		if (record.movementState == MovementState::ERROR) {
 			TraceEvent(SevWarn, "TenantBalancerCannotFinish", self->tbi.id())
@@ -1260,15 +1278,15 @@ ACTOR Future<Void> finishSourceMovement(TenantBalancer* self, FinishSourceMoveme
 		state std::string destinationConnectionString =
 		    record.getPeerDatabase()->getConnectionRecord()->getConnectionString().toString();
 
-		state Version version = wait(lockSourceTenant(self, req.sourcePrefix));
+		state Version version = wait(waitOrError(lockSourceTenant(self, req.sourcePrefix), record.onAbort()));
 		// TODO: get a locked tenant
 		state std::string lockedTenant = "";
 		record.switchVersion = version;
 
 		// Update movement record
 		record.movementState = MovementState::SWITCHING;
-		wait(self->saveMovementRecord(record));
-		wait(sendFinishRequestToDestination(self, &record));
+		wait(waitOrError(self->saveMovementRecord(record), record.onAbort()));
+		wait(waitOrError(sendFinishRequestToDestination(self, &record), record.onAbort()));
 
 		TraceEvent(SevDebug, "TenantBalancerFinishSourceMovementComplete", self->tbi.id())
 		    .detail("MovementId", record.getMovementId())
@@ -1284,7 +1302,7 @@ ACTOR Future<Void> finishSourceMovement(TenantBalancer* self, FinishSourceMoveme
 		    .error(e)
 		    .detail("SourcePrefix", req.sourcePrefix)
 		    .detail("MaxLagSeconds", req.maxLagSeconds);
-
+		// TODO, if the source tenant is locked, should we unlock the tenant here?
 		req.reply.sendError(e);
 	}
 
@@ -1319,16 +1337,17 @@ ACTOR Future<Void> finishDestinationMovement(TenantBalancer* self, FinishDestina
 		if (record.movementState == MovementState::STARTED || record.movementState == MovementState::READY_FOR_SWITCH) {
 			record.movementState = MovementState::SWITCHING;
 			record.switchVersion = req.version;
-			wait(self->saveMovementRecord(record));
+			wait(waitOrError(self->saveMovementRecord(record), record.onAbort()));
 		}
 
 		if (record.movementState == MovementState::SWITCHING) {
 			state DatabaseBackupAgent sourceBackupAgent(record.getPeerDatabase());
-			wait(sourceBackupAgent.flushBackup(self->db, record.getTagName(), record.switchVersion));
+			wait(waitOrError(sourceBackupAgent.flushBackup(self->db, record.getTagName(), record.switchVersion),
+			                 record.onAbort()));
 			// TODO: unlock DR prefix
 
 			record.movementState = MovementState::COMPLETED;
-			wait(self->saveMovementRecord(record));
+			wait(waitOrError(self->saveMovementRecord(record), record.onAbort()));
 		}
 
 		if (record.movementState != MovementState::COMPLETED) {
@@ -1407,13 +1426,14 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 
 	try {
 		state MovementRecord record = self->getMovement(req.movementLocation, req.prefix, req.movementId);
+		record.abort(); // abort other in-flight movements, also prevent repeated abort
 
 		ErrorOr<Void> result = wait(abortDr(self, &record));
 		if (result.isError() && result.getError().code() != error_code_backup_unneeded) {
 			throw result.getError();
 		}
 
-		wait(self->clearMovementRecord(record));
+		wait(self->clearMovementRecord(record) || record.onAbort());
 
 		TraceEvent(SevDebug, "TenantBalancerAbortComplete", self->tbi.id())
 		    .detail("MovementId", record.getMovementId())
@@ -1458,13 +1478,15 @@ ACTOR Future<Void> cleanupMovementSource(TenantBalancer* self, CleanupMovementSo
 		// Erase the moved data, if desired
 		if (req.cleanupType != CleanupMovementSourceRequest::CleanupType::UNLOCK) {
 			KeyRange rangeToErase = prefixRange(req.prefix);
-			wait(runTenantBalancerTransaction<Void>(self->db,
-			                                        self->tbi.id(),
-			                                        "CleanupMovementSourceErase",
-			                                        [rangeToErase](Reference<ReadYourWritesTransaction> tr) {
-				                                        tr->clear(rangeToErase);
-				                                        return tr->commit();
-			                                        }));
+			wait(
+			    waitOrError(runTenantBalancerTransaction<Void>(self->db,
+			                                                   self->tbi.id(),
+			                                                   "CleanupMovementSourceErase",
+			                                                   [rangeToErase](Reference<ReadYourWritesTransaction> tr) {
+				                                                   tr->clear(rangeToErase);
+				                                                   return tr->commit();
+			                                                   }),
+			                record.onAbort()));
 
 			TraceEvent("TenantBalancerPrefixErased", self->tbi.id())
 			    .detail("MovementId", record.getMovementId())
@@ -1475,7 +1497,7 @@ ACTOR Future<Void> cleanupMovementSource(TenantBalancer* self, CleanupMovementSo
 		if (req.cleanupType != CleanupMovementSourceRequest::CleanupType::ERASE) {
 			// TODO unlock tenant
 
-			wait(self->clearMovementRecord(record));
+			wait(waitOrError(self->clearMovementRecord(record), record.onAbort()));
 
 			TraceEvent(SevDebug, "TenantBalancerPrefixUnlocked", self->tbi.id())
 			    .detail("MovementId", record.getMovementId())
