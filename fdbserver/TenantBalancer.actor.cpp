@@ -160,10 +160,12 @@ public:
 	void abort() const {
 		if (!abortPromise.isSet()) {
 			abortPromise.sendError(movement_aborted());
+			return;
 		}
+		throw movement_aborted();
 	}
 
-	Future<Void> onAbort() { return abortPromise.getFuture(); }
+	Future<Void> onAbort() const { return abortPromise.getFuture(); }
 
 	MovementState movementState = MovementState::INITIALIZING;
 	Version switchVersion = invalidVersion;
@@ -1680,6 +1682,42 @@ ACTOR Future<Void> recoverMovement(TenantBalancer* self, RecoverMovementRequest 
 	return Void();
 }
 
+ACTOR Future<Void> clearTenant(TenantBalancer* self,
+                               MovementRecord* record,
+                               MovementLocation location,
+                               bool doErase,
+                               bool doUnlock) {
+	state Key targetPrefix =
+	    location == MovementLocation::SOURCE ? record->getSourcePrefix() : record->getDestinationPrefix();
+	if (doErase) {
+		// Erase the moved data, if desired
+		KeyRange rangeToErase = prefixRange(targetPrefix);
+		wait(waitOrError(runTenantBalancerTransaction<Void>(self->db,
+		                                                    self->tbi.id(),
+		                                                    "CleanupMovementSourceErase",
+		                                                    [rangeToErase](Reference<ReadYourWritesTransaction> tr) {
+			                                                    tr->clear(rangeToErase);
+			                                                    return tr->commit();
+		                                                    }),
+		                 record->onAbort()));
+
+		TraceEvent("TenantBalancerPrefixErased", self->tbi.id())
+		    .detail("MovementId", record->getMovementId())
+		    .detail("Prefix", targetPrefix);
+	}
+	if (doUnlock) {
+		// Unlock the moved range, if desired
+		// TODO unlock tenant
+
+		wait(waitOrError(self->clearMovementRecord(*record), record->onAbort()));
+
+		TraceEvent(SevDebug, "TenantBalancerPrefixUnlocked", self->tbi.id())
+		    .detail("MovementId", record->getMovementId())
+		    .detail("Prefix", targetPrefix);
+	}
+	return Void();
+}
+
 ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req) {
 	++self->abortMovementRequests;
 
@@ -1689,21 +1727,62 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 	    .detail("Prefix", req.prefix);
 
 	try {
-		state Reference<const MovementRecord> record =
-		    self->getMovementSnapshot(req.movementLocation, req.prefix, req.movementId);
-		record->abort(); // abort other in-flight movements
-
-		state Reference<MovementRecordMap::MutableRecord> mutableRecord =
-		    wait(self->mutateMovement(req.movementLocation, req.prefix, req.movementId));
+		state MovementRecord record = self->getMovement(req.movementLocation, req.prefix, req.movementId);
+		if (record.movementState == MovementState::SWITCHING) {
+			// The abort is forbidden during switching
+			TraceEvent(SevWarn, "TenantBalancerAbortFailWhileSwitching", self->tbi.id())
+			    .detail("MovementId", req.movementId)
+			    .detail("Prefix", req.prefix);
+			throw movement_switching();
+		}
+		record.abort(); // abort other in-flight movements, also prevent repeated abort
 
 		record = mutableRecord->record;
 
 		ErrorOr<Void> result = wait(abortDr(self, record));
 		if (result.isError() && result.getError().code() != error_code_backup_unneeded) {
-			throw result.getError();
+			TraceEvent(SevWarn, "TenantBalancerAbortDRError", self->tbi.id()).error(result.getError());
+			// TODO throw the result or just log it?
+			// throw result.getError();
 		}
 
-		wait(self->clearMovementRecord(mutableRecord));
+		// TODO what is status is error?
+		if (record.getMovementLocation() == MovementLocation::SOURCE) {
+			if (record.movementState == MovementState::COMPLETED) {
+				TraceEvent(SevDebug, "TenantBalancerAbortCompletedMovement", self->tbi.id())
+				    .detail("MovementId", req.movementId)
+				    .detail("Prefix", req.prefix);
+			} else {
+				// Data belongs to src
+				TraceEvent(SevDebug, "TenantBalancerAbortUncompletedMovement", self->tbi.id())
+				    .detail("MovementId", req.movementId)
+				    .detail("MovementStatus", TenantBalancerInterface::movementStateToString(record.movementState))
+				    .detail("Prefix", req.prefix);
+			}
+
+			// TODO Remain the erase and unlock operation to cleanupMovement or do it here?
+			// TODO keep the data in the source cluster anyway, unless clients delete it explicitly with
+			// cleanupMovement?
+			clearTenant(self, &record, MovementLocation::SOURCE, false, true);
+		} else {
+			if (record.movementState == MovementState::COMPLETED) {
+				// Data belongs to dest
+				TraceEvent(SevDebug, "TenantBalancerAbortCompletedMovement", self->tbi.id())
+				    .detail("MovementId", req.movementId)
+				    .detail("Prefix", req.prefix);
+				clearTenant(self,
+				            &record,
+				            MovementLocation::DEST,
+				            false,
+				            true); // Erase the movement record only and keep the data
+			} else {
+				TraceEvent(SevDebug, "TenantBalancerAbortUncompletedMovement", self->tbi.id())
+				    .detail("MovementId", req.movementId)
+				    .detail("MovementStatus", TenantBalancerInterface::movementStateToString(record.movementState))
+				    .detail("Prefix", req.prefix);
+				clearTenant(self, &record, MovementLocation::DEST, true, true);
+			}
+		}
 
 		TraceEvent(SevDebug, "TenantBalancerAbortComplete", self->tbi.id())
 		    .detail("MovementId", record->getMovementId())
@@ -1749,34 +1828,11 @@ ACTOR Future<Void> cleanupMovementSource(TenantBalancer* self, CleanupMovementSo
 			throw movement_not_ready_for_operation();
 		}
 
-		// Erase the moved data, if desired
-		if (req.cleanupType != CleanupMovementSourceRequest::CleanupType::UNLOCK) {
-			KeyRange rangeToErase = prefixRange(req.prefix);
-			wait(
-			    waitOrError(runTenantBalancerTransaction<Void>(self->db,
-			                                                   self->tbi.id(),
-			                                                   "CleanupMovementSourceErase",
-			                                                   [rangeToErase](Reference<ReadYourWritesTransaction> tr) {
-				                                                   tr->clear(rangeToErase);
-				                                                   return tr->commit();
-			                                                   }),
-			                record->onAbort()));
-
-			TraceEvent("TenantBalancerPrefixErased", self->tbi.id())
-			    .detail("MovementId", record->getMovementId())
-			    .detail("Prefix", req.prefix);
-		}
-
-		// Unlock the moved range, if desired
-		if (req.cleanupType != CleanupMovementSourceRequest::CleanupType::ERASE) {
-			// TODO unlock tenant
-
-			wait(waitOrError(self->clearMovementRecord(mutableRecord), record->onAbort()));
-
-			TraceEvent(SevDebug, "TenantBalancerPrefixUnlocked", self->tbi.id())
-			    .detail("MovementId", record->getMovementId())
-			    .detail("Prefix", req.prefix);
-		}
+		clearTenant(self,
+		            &record,
+		            MovementLocation::SOURCE,
+		            req.cleanupType != CleanupMovementSourceRequest::CleanupType::UNLOCK,
+		            req.cleanupType != CleanupMovementSourceRequest::CleanupType::ERASE);
 
 		TraceEvent(SevDebug, "TenantBalancerCleanupMovementSourceComplete", self->tbi.id())
 		    .detail("MovementId", record->getMovementId())

@@ -249,6 +249,7 @@ ERROR( movement_not_ready_for_operation, 2395, "The movement is not ready to run
 ERROR( movement_error, 2396, "Movement error")
 ERROR( movement_lag_too_large, 2397, "Movement lag time is too large")
 ERROR( movement_aborted, 2398, "The movement has been aborted")
+ERROR( movement_switching, 2399, "The movement is swtiching, abort operations are forbidden")
 
 ERROR( key_not_found, 2400, "Expected key is missing")
 ERROR( json_malformed, 2401, "JSON string was malformed")
