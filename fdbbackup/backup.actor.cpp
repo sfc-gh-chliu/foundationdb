@@ -2394,12 +2394,14 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 	ASSERT(src.present() || dest.present());
 
 	try {
+		state std::vector<Future<Void>> abortFuture;
 		if (src.present() && sourcePrefix.present()) {
-			wait(abortDBMove(src.get(), sourcePrefix.get(), MovementLocation::SOURCE));
+			abortFuture.push_back(abortDBMove(src.get(), sourcePrefix.get(), MovementLocation::SOURCE));
 		}
 		if (dest.present() && destinationPrefix.present()) {
-			wait(abortDBMove(dest.get(), destinationPrefix.get(), MovementLocation::DEST));
+			abortFuture.push_back(abortDBMove(dest.get(), destinationPrefix.get(), MovementLocation::DEST));
 		}
+		wait(waitForAll(abortFuture));
 		printf("The data movement was successfully aborted.\n");
 	} catch (Error& e) {
 		if (e.code() == error_code_actor_cancelled)

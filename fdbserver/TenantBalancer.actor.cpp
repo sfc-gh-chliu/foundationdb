@@ -162,7 +162,6 @@ public:
 			abortPromise.sendError(movement_aborted());
 			return;
 		}
-		throw movement_aborted();
 	}
 
 	Future<Void> onAbort() const { return abortPromise.getFuture(); }
@@ -1728,59 +1727,57 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 
 	try {
 		state MovementRecord record = self->getMovement(req.movementLocation, req.prefix, req.movementId);
-		if (record.movementState == MovementState::SWITCHING) {
-			// The abort is forbidden during switching
-			TraceEvent(SevWarn, "TenantBalancerAbortFailWhileSwitching", self->tbi.id())
-			    .detail("MovementId", req.movementId)
-			    .detail("Prefix", req.prefix);
-			throw movement_switching();
-		}
-		record.abort(); // abort other in-flight movements, also prevent repeated abort
+		record.abort(); // abort other in-flight movements
 
-		record = mutableRecord->record;
-
-		ErrorOr<Void> result = wait(abortDr(self, record));
-		if (result.isError() && result.getError().code() != error_code_backup_unneeded) {
-			TraceEvent(SevWarn, "TenantBalancerAbortDRError", self->tbi.id()).error(result.getError());
-			// TODO throw the result or just log it?
-			// throw result.getError();
-		}
-
+		state AbortResult abortResult;
 		// TODO what is status is error?
 		if (record.getMovementLocation() == MovementLocation::SOURCE) {
 			if (record.movementState == MovementState::COMPLETED) {
 				TraceEvent(SevDebug, "TenantBalancerAbortCompletedMovement", self->tbi.id())
 				    .detail("MovementId", req.movementId)
 				    .detail("Prefix", req.prefix);
+				abortResult = AbortResult::COMPLETED;
+			} else if (record.movementState == MovementState::SWITCHING) {
+				TraceEvent(SevDebug, "TenantBalancerAbortDuringSwitching", self->tbi.id())
+				    .detail("MovementId", req.movementId)
+				    .detail("Prefix", req.prefix);
+				ErrorOr<Void> result = wait(abortDr(self, &record));
+				if (result.isError() && result.getError().code() != error_code_backup_unneeded) {
+					throw result.getError();
+				}
+				abortResult = AbortResult::UNKNOWN;
 			} else {
 				// Data belongs to src
 				TraceEvent(SevDebug, "TenantBalancerAbortUncompletedMovement", self->tbi.id())
 				    .detail("MovementId", req.movementId)
 				    .detail("MovementStatus", TenantBalancerInterface::movementStateToString(record.movementState))
 				    .detail("Prefix", req.prefix);
+				ErrorOr<Void> result = wait(abortDr(self, &record));
+				if (result.isError() && result.getError().code() != error_code_backup_unneeded) {
+					throw result.getError();
+				}
+				wait(clearTenant(self, &record, MovementLocation::DEST, false, true));
+				abortResult = AbortResult::ROLLED_BACK;
 			}
-
-			// TODO Remain the erase and unlock operation to cleanupMovement or do it here?
-			// TODO keep the data in the source cluster anyway, unless clients delete it explicitly with
-			// cleanupMovement?
-			clearTenant(self, &record, MovementLocation::SOURCE, false, true);
 		} else {
 			if (record.movementState == MovementState::COMPLETED) {
 				// Data belongs to dest
 				TraceEvent(SevDebug, "TenantBalancerAbortCompletedMovement", self->tbi.id())
 				    .detail("MovementId", req.movementId)
 				    .detail("Prefix", req.prefix);
-				clearTenant(self,
-				            &record,
-				            MovementLocation::DEST,
-				            false,
-				            true); // Erase the movement record only and keep the data
+				wait(clearTenant(self, &record, MovementLocation::DEST, false, true));
+				abortResult = AbortResult::COMPLETED;
 			} else {
 				TraceEvent(SevDebug, "TenantBalancerAbortUncompletedMovement", self->tbi.id())
 				    .detail("MovementId", req.movementId)
 				    .detail("MovementStatus", TenantBalancerInterface::movementStateToString(record.movementState))
 				    .detail("Prefix", req.prefix);
-				clearTenant(self, &record, MovementLocation::DEST, true, true);
+				ErrorOr<Void> result = wait(abortDr(self, &record));
+				if (result.isError() && result.getError().code() != error_code_backup_unneeded) {
+					throw result.getError();
+				}
+				wait(clearTenant(self, &record, MovementLocation::DEST, true, true));
+				abortResult = AbortResult::ROLLED_BACK;
 			}
 		}
 
@@ -1794,6 +1791,7 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 		            record->getPeerDatabase()->getConnectionRecord()->getConnectionString().toString());
 
 		AbortMovementReply reply;
+		reply.abortResult = abortResult;
 		req.reply.send(reply);
 	} catch (Error& e) {
 		TraceEvent(SevDebug, "TenantBalancerAbortError", self->tbi.id())
@@ -1828,11 +1826,11 @@ ACTOR Future<Void> cleanupMovementSource(TenantBalancer* self, CleanupMovementSo
 			throw movement_not_ready_for_operation();
 		}
 
-		clearTenant(self,
-		            &record,
-		            MovementLocation::SOURCE,
-		            req.cleanupType != CleanupMovementSourceRequest::CleanupType::UNLOCK,
-		            req.cleanupType != CleanupMovementSourceRequest::CleanupType::ERASE);
+		wait(clearTenant(self,
+		                 &record,
+		                 MovementLocation::SOURCE,
+		                 req.cleanupType != CleanupMovementSourceRequest::CleanupType::UNLOCK,
+		                 req.cleanupType != CleanupMovementSourceRequest::CleanupType::ERASE));
 
 		TraceEvent(SevDebug, "TenantBalancerCleanupMovementSourceComplete", self->tbi.id())
 		    .detail("MovementId", record->getMovementId())
