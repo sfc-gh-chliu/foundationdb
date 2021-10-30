@@ -32,7 +32,7 @@
 // extern enum class MovementState;
 enum class MovementState { INITIALIZING, STARTED, READY_FOR_SWITCH, SWITCHING, COMPLETED, ERROR };
 enum class MovementLocation { SOURCE, DEST };
-enum class AbortResult { UNKNOWN, ROLLED_BACK, COMPLETED };
+enum class AbortResult { UNSET, UNKNOWN, ROLLED_BACK, COMPLETED };
 
 struct TenantBalancerInterface {
 	constexpr static FileIdentifier file_identifier = 6185894;
@@ -438,6 +438,7 @@ struct AbortMovementRequest {
 	Optional<UID> movementId;
 	Key prefix;
 	MovementLocation movementLocation;
+	Optional<AbortResult> peerAbortResult;
 
 	ReplyPromise<AbortMovementReply> reply;
 
@@ -449,7 +450,7 @@ struct AbortMovementRequest {
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, movementId, prefix, movementLocation, reply);
+		serializer(ar, movementId, prefix, movementLocation, peerAbortResult, reply);
 	}
 };
 

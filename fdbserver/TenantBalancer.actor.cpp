@@ -1729,8 +1729,7 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 		state MovementRecord record = self->getMovement(req.movementLocation, req.prefix, req.movementId);
 		record.abort(); // abort other in-flight movements
 
-		state AbortResult abortResult;
-		// TODO what is status is error?
+		state AbortResult abortResult = AbortResult::UNSET;
 		if (record.getMovementLocation() == MovementLocation::SOURCE) {
 			if (record.movementState == MovementState::COMPLETED) {
 				TraceEvent(SevDebug, "TenantBalancerAbortCompletedMovement", self->tbi.id())
@@ -1741,13 +1740,17 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 				TraceEvent(SevDebug, "TenantBalancerAbortDuringSwitching", self->tbi.id())
 				    .detail("MovementId", req.movementId)
 				    .detail("Prefix", req.prefix);
-				ErrorOr<Void> result = wait(abortDr(self, &record));
-				if (result.isError() && result.getError().code() != error_code_backup_unneeded) {
-					throw result.getError();
+				if (req.peerAbortResult.present() && req.peerAbortResult.get() == AbortResult::COMPLETED) {
+					record.movementState = MovementState::COMPLETED;
+					wait(self->saveMovementRecord(record));
+				} else {
+					ErrorOr<Void> result = wait(abortDr(self, &record));
+					if (result.isError() && result.getError().code() != error_code_backup_unneeded) {
+						throw result.getError();
+					}
+					abortResult = AbortResult::UNKNOWN;
 				}
-				abortResult = AbortResult::UNKNOWN;
 			} else {
-				// Data belongs to src
 				TraceEvent(SevDebug, "TenantBalancerAbortUncompletedMovement", self->tbi.id())
 				    .detail("MovementId", req.movementId)
 				    .detail("MovementStatus", TenantBalancerInterface::movementStateToString(record.movementState))
@@ -1760,8 +1763,8 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 				abortResult = AbortResult::ROLLED_BACK;
 			}
 		} else {
+			// Destination cluster
 			if (record.movementState == MovementState::COMPLETED) {
-				// Data belongs to dest
 				TraceEvent(SevDebug, "TenantBalancerAbortCompletedMovement", self->tbi.id())
 				    .detail("MovementId", req.movementId)
 				    .detail("Prefix", req.prefix);

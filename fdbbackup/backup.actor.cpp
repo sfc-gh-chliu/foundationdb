@@ -2366,8 +2366,12 @@ ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> ma
 	return Void();
 }
 
-ACTOR Future<Void> abortDBMove(Database database, Key prefix, MovementLocation location) {
+ACTOR Future<AbortResult> abortDBMove(Database database,
+                                      Key prefix,
+                                      MovementLocation location,
+                                      Optional<AbortResult> peerAbortResult) {
 	state AbortMovementRequest abortMovementRequest(prefix, location);
+	abortMovementRequest.peerAbortResult = peerAbortResult;
 	state Future<ErrorOr<AbortMovementReply>> abortMovementReply = Never();
 	state Future<Void> initialize = Void();
 	loop choose {
@@ -2375,7 +2379,7 @@ ACTOR Future<Void> abortDBMove(Database database, Key prefix, MovementLocation l
 			if (reply.isError()) {
 				throw reply.getError();
 			}
-			return Void();
+			return reply.get().abortResult;
 		}
 		when(wait(database->onTenantBalancerChanged() || initialize)) {
 			initialize = Never();
@@ -2394,14 +2398,16 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 	ASSERT(src.present() || dest.present());
 
 	try {
-		state std::vector<Future<Void>> abortFuture;
-		if (src.present() && sourcePrefix.present()) {
-			abortFuture.push_back(abortDBMove(src.get(), sourcePrefix.get(), MovementLocation::SOURCE));
-		}
+		state Optional<AbortResult> destAbortResult;
 		if (dest.present() && destinationPrefix.present()) {
-			abortFuture.push_back(abortDBMove(dest.get(), destinationPrefix.get(), MovementLocation::DEST));
+			state AbortResult tempDestAbortResult =
+			    wait(abortDBMove(dest.get(), destinationPrefix.get(), MovementLocation::DEST, Optional<AbortResult>()));
+			destAbortResult = Optional<AbortResult>(tempDestAbortResult);
 		}
-		wait(waitForAll(abortFuture));
+		if (src.present() && sourcePrefix.present()) {
+			state AbortResult tempSrcAbortResult =
+			    wait(abortDBMove(src.get(), sourcePrefix.get(), MovementLocation::SOURCE, destAbortResult));
+		}
 		printf("The data movement was successfully aborted.\n");
 	} catch (Error& e) {
 		if (e.code() == error_code_actor_cancelled)
