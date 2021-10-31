@@ -68,7 +68,7 @@ std::string TenantMovementStatus::toJson() const {
 	// Insert movement status into JSON
 	statusRoot.create("isSourceLocked") = isSourceLocked;
 	statusRoot.create("isDestinationLocked") = isDestinationLocked;
-	if (databaseVersionLag.get()) {
+	if (databaseVersionLag.present()) {
 		statusRoot.create("destinationDatabaseVersionLag") = databaseVersionLag.get();
 	}
 	if (mutationLag.present()) {
