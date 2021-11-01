@@ -2403,13 +2403,26 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 			state AbortResult tempDestAbortResult =
 			    wait(abortDBMove(dest.get(), destinationPrefix.get(), MovementLocation::DEST, AbortResult::UNKNOWN));
 			destAbortResult = tempDestAbortResult;
+
+			if (tempDestAbortResult == AbortResult::COMPLETED) {
+				printf("The movement in the destination luster is already completed.\n");
+			} else {
+				printf("The movement in the destination luster is rolled back.");
+			}
 		}
 		if (src.present() && sourcePrefix.present()) {
 			state AbortResult tempSrcAbortResult =
 			    wait(abortDBMove(src.get(), sourcePrefix.get(), MovementLocation::SOURCE, destAbortResult));
-			if (tempSrcAbortResult != AbortResult::ROLLED_BACK) {
-				printf("To unlock the tenant and clean up the movement record, please run: \n fdbmove clean -s [source "
-				       "cluster file]  --prefix [prefix] --unlock \n");
+
+			std::string msg = "To delete and/or unlock the source data, please run: \n fdbmove clean -s [source "
+			                  "cluster file]  --prefix [prefix] [--erase] [--unlock]";
+			if (tempSrcAbortResult == AbortResult::COMPLETED) {
+				printf("The movement in the source luster is already completed. %s\n", msg.c_str());
+			} else if (tempSrcAbortResult == AbortResult::UNKNOWN) {
+				printf("It could not be determined whether the movement has completed in the source cluster. %s\n",
+				       msg.c_str());
+			} else {
+				printf("The movement in the source luster is rolled back.");
 			}
 		}
 		printf("The data movement was successfully aborted.\n");
