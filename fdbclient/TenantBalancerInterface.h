@@ -32,7 +32,7 @@
 // extern enum class MovementState;
 enum class MovementState { INITIALIZING, STARTED, READY_FOR_SWITCH, SWITCHING, COMPLETED, ERROR };
 enum class MovementLocation { SOURCE, DEST };
-enum class AbortResult { UNSET, UNKNOWN, ROLLED_BACK, COMPLETED };
+enum class AbortResult { UNKNOWN, ROLLED_BACK, COMPLETED };
 
 struct TenantBalancerInterface {
 	constexpr static FileIdentifier file_identifier = 6185894;
@@ -438,7 +438,7 @@ struct AbortMovementRequest {
 	Optional<UID> movementId;
 	Key prefix;
 	MovementLocation movementLocation;
-	Optional<AbortResult> peerAbortResult;
+	AbortResult peerAbortResult = AbortResult::UNKNOWN;
 
 	ReplyPromise<AbortMovementReply> reply;
 

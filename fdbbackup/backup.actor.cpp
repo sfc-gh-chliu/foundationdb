@@ -2369,7 +2369,7 @@ ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> ma
 ACTOR Future<AbortResult> abortDBMove(Database database,
                                       Key prefix,
                                       MovementLocation location,
-                                      Optional<AbortResult> peerAbortResult) {
+                                      AbortResult peerAbortResult) {
 	state AbortMovementRequest abortMovementRequest(prefix, location);
 	abortMovementRequest.peerAbortResult = peerAbortResult;
 	state Future<ErrorOr<AbortMovementReply>> abortMovementReply = Never();
@@ -2398,18 +2398,18 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 	ASSERT(src.present() || dest.present());
 
 	try {
-		state Optional<AbortResult> destAbortResult;
+		state AbortResult destAbortResult = AbortResult::UNKNOWN;
 		if (dest.present() && destinationPrefix.present()) {
 			state AbortResult tempDestAbortResult =
-			    wait(abortDBMove(dest.get(), destinationPrefix.get(), MovementLocation::DEST, Optional<AbortResult>()));
-			destAbortResult = Optional<AbortResult>(tempDestAbortResult);
+			    wait(abortDBMove(dest.get(), destinationPrefix.get(), MovementLocation::DEST, AbortResult::UNKNOWN));
+			destAbortResult = tempDestAbortResult;
 		}
 		if (src.present() && sourcePrefix.present()) {
 			state AbortResult tempSrcAbortResult =
 			    wait(abortDBMove(src.get(), sourcePrefix.get(), MovementLocation::SOURCE, destAbortResult));
 			if (tempSrcAbortResult != AbortResult::ROLLED_BACK) {
 				printf("To unlock the tenant and clean up the movement record, please run: \n fdbmove clean -s [source "
-				       "cluster file]  --prefix [prefix] [--erase] [--unlock] \n");
+				       "cluster file]  --prefix [prefix] --unlock \n");
 			}
 		}
 		printf("The data movement was successfully aborted.\n");
