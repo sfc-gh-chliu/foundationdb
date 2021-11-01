@@ -2407,6 +2407,10 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 		if (src.present() && sourcePrefix.present()) {
 			state AbortResult tempSrcAbortResult =
 			    wait(abortDBMove(src.get(), sourcePrefix.get(), MovementLocation::SOURCE, destAbortResult));
+			if (tempSrcAbortResult != AbortResult::ROLLED_BACK) {
+				printf("To unlock the tenant and clean up the movement record, please run: \n fdbmove clean -s [source "
+				       "cluster file]  --prefix [prefix] [--erase] [--unlock] \n");
+			}
 		}
 		printf("The data movement was successfully aborted.\n");
 	} catch (Error& e) {
