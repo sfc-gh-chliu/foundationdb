@@ -1682,10 +1682,11 @@ ACTOR Future<Void> recoverMovement(TenantBalancer* self, RecoverMovementRequest 
 }
 
 ACTOR Future<Void> clearTenant(TenantBalancer* self,
-                               MovementRecord* record,
+                               Reference<MovementRecordMap::MutableRecord> mutableRecord,
                                MovementLocation location,
                                bool doErase,
                                bool doUnlock) {
+	state Reference<MovementRecord> record = mutableRecord->record;
 	state Key targetPrefix =
 	    location == MovementLocation::SOURCE ? record->getSourcePrefix() : record->getDestinationPrefix();
 	if (doErase) {
@@ -1708,7 +1709,7 @@ ACTOR Future<Void> clearTenant(TenantBalancer* self,
 		// Unlock the moved range, if desired
 		// TODO unlock tenant
 
-		wait(waitOrError(self->clearMovementRecord(*record), record->onAbort()));
+		wait(waitOrError(self->clearMovementRecord(mutableRecord), record->onAbort()));
 
 		TraceEvent(SevDebug, "TenantBalancerPrefixUnlocked", self->tbi.id())
 		    .detail("MovementId", record->getMovementId())
@@ -1718,9 +1719,10 @@ ACTOR Future<Void> clearTenant(TenantBalancer* self,
 }
 
 ACTOR Future<Void> rollbackMovement(TenantBalancer* self,
-                                    MovementRecord* record,
+                                    Reference<MovementRecordMap::MutableRecord> mutableRecord,
                                     bool eraseData,
                                     AbortResult* abortResult) {
+	state Reference<MovementRecord> record = mutableRecord->record;
 	TraceEvent(SevDebug, "TenantBalancerRollbackMovement", self->tbi.id())
 	    .detail("MovementId", record->getMovementId())
 	    .detail("MovementStatus", TenantBalancerInterface::movementStateToString(record->movementState))
@@ -1730,7 +1732,7 @@ ACTOR Future<Void> rollbackMovement(TenantBalancer* self,
 	if (result.isError() && result.getError().code() != error_code_backup_unneeded) {
 		throw result.getError();
 	}
-	wait(clearTenant(self, record, MovementLocation::DEST, eraseData, true));
+	wait(clearTenant(self, mutableRecord, MovementLocation::DEST, eraseData, true));
 	*abortResult = AbortResult::ROLLED_BACK;
 	return Void();
 }
@@ -1744,30 +1746,32 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 	    .detail("Prefix", req.prefix);
 
 	try {
-		state MovementRecord record = self->getMovement(req.movementLocation, req.prefix, req.movementId);
-		record.abort(); // abort other in-flight movements
+		state Reference<MovementRecordMap::MutableRecord> mutableRecord =
+		    wait(self->mutateMovement(req.movementLocation, req.prefix));
+		state Reference<MovementRecord> record = mutableRecord->record;
+		record->abort(); // abort other in-flight movements
 
 		state AbortResult abortResult = AbortResult::UNKNOWN;
-		if (record.getMovementLocation() == MovementLocation::SOURCE) {
-			if (record.movementState == MovementState::COMPLETED) {
+		if (record->getMovementLocation() == MovementLocation::SOURCE) {
+			if (record->movementState == MovementState::COMPLETED) {
 				TraceEvent(SevDebug, "TenantBalancerAbortCompletedMovement", self->tbi.id())
 				    .detail("MovementId", req.movementId)
 				    .detail("Prefix", req.prefix);
 				abortResult = AbortResult::COMPLETED;
-			} else if (record.movementState == MovementState::SWITCHING) {
+			} else if (record->movementState == MovementState::SWITCHING) {
 				TraceEvent(SevDebug, "TenantBalancerAbortDuringSwitching", self->tbi.id())
 				    .detail("MovementId", req.movementId)
 				    .detail("Prefix", req.prefix);
 				if (req.peerAbortResult == AbortResult::COMPLETED) {
 					// Destination status is completed, consider the movement as completed too in source side.
-					record.movementState = MovementState::COMPLETED;
+					record->movementState = MovementState::COMPLETED;
 					wait(self->saveMovementRecord(record));
 				} else if (req.peerAbortResult == AbortResult::ROLLED_BACK) {
 					// Destination is rolled back, rollback too
-					wait(rollbackMovement(self, &record, false, &abortResult));
+					wait(rollbackMovement(self, mutableRecord, false, &abortResult));
 				} else {
 					// Destination status is unknown or there isn't any previous abort
-					ErrorOr<Void> result = wait(abortDr(self, &record));
+					ErrorOr<Void> result = wait(abortDr(self, record));
 					if (result.isError() && result.getError().code() != error_code_backup_unneeded) {
 						throw result.getError();
 					}
@@ -1775,18 +1779,18 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 				}
 			} else {
 				// Source cluster's status is not completed or switching, simply rollback
-				wait(rollbackMovement(self, &record, false, &abortResult));
+				wait(rollbackMovement(self, mutableRecord, false, &abortResult));
 			}
 		} else {
 			// Destination cluster
-			if (record.movementState == MovementState::COMPLETED) {
+			if (record->movementState == MovementState::COMPLETED) {
 				TraceEvent(SevDebug, "TenantBalancerAbortCompletedMovement", self->tbi.id())
 				    .detail("MovementId", req.movementId)
 				    .detail("Prefix", req.prefix);
-				wait(clearTenant(self, &record, MovementLocation::DEST, false, true));
+				wait(clearTenant(self, mutableRecord, MovementLocation::DEST, false, true));
 				abortResult = AbortResult::COMPLETED;
 			} else {
-				wait(rollbackMovement(self, &record, true, &abortResult));
+				wait(rollbackMovement(self, mutableRecord, true, &abortResult));
 			}
 		}
 
@@ -1836,7 +1840,7 @@ ACTOR Future<Void> cleanupMovementSource(TenantBalancer* self, CleanupMovementSo
 		}
 
 		wait(clearTenant(self,
-		                 &record,
+		                 mutableRecord,
 		                 MovementLocation::SOURCE,
 		                 req.cleanupType != CleanupMovementSourceRequest::CleanupType::UNLOCK,
 		                 req.cleanupType != CleanupMovementSourceRequest::CleanupType::ERASE));
