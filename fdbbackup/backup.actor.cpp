@@ -2404,18 +2404,19 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 			    wait(abortDBMove(dest.get(), destinationPrefix.get(), MovementLocation::DEST, AbortResult::UNKNOWN));
 			destAbortResult = tempDestAbortResult;
 
-			if (tempDestAbortResult == AbortResult::COMPLETED) {
-				printf("The movement in the destination luster is already completed.\n");
-			} else {
-				printf("The movement in the destination luster is rolled back.");
+			if (!src.present()) {
+				if (tempDestAbortResult == AbortResult::COMPLETED) {
+					printf("The movement in the destination luster is already completed.\n");
+				} else {
+					printf("The movement in the destination luster is rolled back.");
+				}
 			}
 		}
 		if (src.present() && sourcePrefix.present()) {
 			state AbortResult tempSrcAbortResult =
 			    wait(abortDBMove(src.get(), sourcePrefix.get(), MovementLocation::SOURCE, destAbortResult));
 
-			std::string msg = "To delete and/or unlock the source data, please run: \n fdbmove clean -s [source "
-			                  "cluster file]  --prefix [prefix] [--erase] [--unlock]";
+			std::string msg = "To delete and/or unlock the source data, please run the clean command.";
 			if (tempSrcAbortResult == AbortResult::COMPLETED) {
 				printf("The movement in the source luster is already completed. %s\n", msg.c_str());
 			} else if (tempSrcAbortResult == AbortResult::UNKNOWN) {
