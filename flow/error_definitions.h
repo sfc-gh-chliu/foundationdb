@@ -249,7 +249,11 @@ ERROR( movement_not_ready_for_operation, 2395, "The movement is not ready to run
 ERROR( movement_error, 2396, "Movement error")
 ERROR( movement_lag_too_large, 2397, "Movement lag time is too large")
 ERROR( movement_aborted, 2398, "The movement has been aborted")
+<<<<<<< HEAD
 ERROR( movement_abort_error, 2399, "The movement can't be aborted successfully")
+=======
+ERROR( movement_parameter_invalid, 2399, "The parameters are invalid")
+>>>>>>> 0e138db11 (Add function getValidMovementId)
 
 ERROR( key_not_found, 2400, "Expected key is missing")
 ERROR( json_malformed, 2401, "JSON string was malformed")

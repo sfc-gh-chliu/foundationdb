@@ -2255,9 +2255,10 @@ ACTOR Future<Void> statusDBMove(Database db, Key prefix, MovementLocation moveme
 ACTOR Future<std::vector<TenantMovementInfo>> getActiveMovements(
     Database database,
     Optional<std::string> peerDatabaseConnectionStringFilter,
-    Optional<MovementLocation> locationFilter) {
+    Optional<MovementLocation> locationFilter,
+    Optional<Key> prefixFilter) {
 	state GetActiveMovementsRequest getActiveMovementsRequest(
-	    Optional<Key>(), peerDatabaseConnectionStringFilter, locationFilter);
+	    prefixFilter, peerDatabaseConnectionStringFilter, locationFilter);
 	state Future<ErrorOr<GetActiveMovementsReply>> getActiveMovementsReply = Never();
 	state Future<Void> initialize = Void();
 	loop choose {
@@ -2283,7 +2284,7 @@ ACTOR Future<Void> fetchAndDisplayDBMove(Database db,
 	try {
 		// Get active movement list
 		state std::vector<TenantMovementInfo> activeMovements =
-		    wait(getActiveMovements(db, peerDatabaseConnectionStringFilter, locationFilter));
+		    wait(getActiveMovements(db, peerDatabaseConnectionStringFilter, locationFilter, Optional<Key>()));
 
 		if (activeMovements.empty()) {
 			printf("No movements found\n");
@@ -2370,10 +2371,40 @@ ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> ma
 	return Void();
 }
 
-ACTOR Future<AbortState> abortDBMove(Database database,
-                                     Key prefix,
-                                     MovementLocation location,
-                                     AbortState abortInstruction) {
+ACTOR Future<Optional<UID>> getValidMovementId(Optional<Database> src,
+                                               Optional<Database> dest,
+                                               Optional<Key> sourcePrefix,
+                                               Optional<Key> destinationPrefix) {
+	state UID sourceUid, destUid;
+	if (src.present()) {
+		ASSERT(sourcePrefix.present());
+		state std::vector<TenantMovementInfo> srcMovements =
+		    wait(getActiveMovements(src.get(), Optional<std::string>(), MovementLocation::SOURCE, sourcePrefix));
+		if (srcMovements.size() != 1) {
+			return Optional<UID>();
+		}
+		sourceUid = srcMovements[0].movementId;
+	}
+	if (dest.present()) {
+		ASSERT(destinationPrefix.present());
+		state std::vector<TenantMovementInfo> destMovements =
+		    wait(getActiveMovements(dest.get(), Optional<std::string>(), MovementLocation::DEST, destinationPrefix));
+		if (destMovements.size() != 1) {
+			return Optional<UID>();
+		}
+		destUid = destMovements[0].movementId;
+	}
+	if (src.present() && dest.present()) {
+		return sourceUid == destUid ? sourceUid : Optional<UID>();
+	} else if (src.present()) {
+		return sourceUid;
+	} else if (dest.present()) {
+		return destUid;
+	}
+	return Optional<UID>();
+}
+
+ACTOR Future<Void> abortDBMove(Database database, Key prefix, MovementLocation location) {
 	state AbortMovementRequest abortMovementRequest(prefix, location);
 	abortMovementRequest.abortInstruction = abortInstruction;
 	state Future<ErrorOr<AbortMovementReply>> abortMovementReply = Never();
