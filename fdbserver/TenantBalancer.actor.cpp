@@ -1721,7 +1721,7 @@ ACTOR Future<Void> clearTenant(TenantBalancer* self,
 ACTOR Future<Void> rollbackMovement(TenantBalancer* self,
                                     Reference<MovementRecordMap::MutableRecord> mutableRecord,
                                     bool eraseData,
-                                    AbortResult* abortResult) {
+                                    AbortState* abortResult) {
 	state Reference<MovementRecord> record = mutableRecord->record;
 	TraceEvent(SevDebug, "TenantBalancerRollbackMovement", self->tbi.id())
 	    .detail("MovementId", record->getMovementId())
@@ -1733,7 +1733,7 @@ ACTOR Future<Void> rollbackMovement(TenantBalancer* self,
 		throw result.getError();
 	}
 	wait(clearTenant(self, mutableRecord, MovementLocation::DEST, eraseData, true));
-	*abortResult = AbortResult::ROLLED_BACK;
+	*abortResult = AbortState::ROLLED_BACK;
 	return Void();
 }
 
@@ -1751,45 +1751,57 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 		state Reference<MovementRecord> record = mutableRecord->record;
 		record->abort(); // abort other in-flight movements
 
-		state AbortResult abortResult = AbortResult::UNKNOWN;
+		state AbortState abortResult = AbortState::UNKNOWN;
 		if (record->getMovementLocation() == MovementLocation::SOURCE) {
 			if (record->movementState == MovementState::COMPLETED) {
+				if (req.abortInstruction == AbortState::ROLLED_BACK) {
+					throw movement_abort_error();
+				}
 				TraceEvent(SevDebug, "TenantBalancerAbortCompletedMovement", self->tbi.id())
 				    .detail("MovementId", req.movementId)
 				    .detail("Prefix", req.prefix);
-				abortResult = AbortResult::COMPLETED;
+				abortResult = AbortState::COMPLETED;
 			} else if (record->movementState == MovementState::SWITCHING) {
 				TraceEvent(SevDebug, "TenantBalancerAbortDuringSwitching", self->tbi.id())
 				    .detail("MovementId", req.movementId)
 				    .detail("Prefix", req.prefix);
-				if (req.peerAbortResult == AbortResult::COMPLETED) {
-					// Destination status is completed, consider the movement as completed too in source side.
+				if (req.abortInstruction == AbortState::COMPLETED) {
+					// Abort instruction is completed, consider the movement as completed
 					record->movementState = MovementState::COMPLETED;
-					wait(self->saveMovementRecord(record));
-				} else if (req.peerAbortResult == AbortResult::ROLLED_BACK) {
-					// Destination is rolled back, rollback too
+					wait(self->saveMovementRecord(mutableRecord));
+				} else if (req.abortInstruction == AbortState::ROLLED_BACK) {
+					// Abort instruction is rolled back
 					wait(rollbackMovement(self, mutableRecord, false, &abortResult));
 				} else {
-					// Destination status is unknown or there isn't any previous abort
+					// There isn't any previous destination abort
 					ErrorOr<Void> result = wait(abortDr(self, record));
 					if (result.isError() && result.getError().code() != error_code_backup_unneeded) {
 						throw result.getError();
 					}
-					abortResult = AbortResult::UNKNOWN;
+					abortResult = AbortState::UNKNOWN;
 				}
 			} else {
-				// Source cluster's status is not completed or switching, simply rollback
+				// Source cluster's status isn't completed or switching, simply roll it back
+				if (req.abortInstruction == AbortState::COMPLETED) {
+					throw movement_abort_error();
+				}
 				wait(rollbackMovement(self, mutableRecord, false, &abortResult));
 			}
 		} else {
 			// Destination cluster
 			if (record->movementState == MovementState::COMPLETED) {
+				if (req.abortInstruction == AbortState::ROLLED_BACK) {
+					throw movement_abort_error();
+				}
 				TraceEvent(SevDebug, "TenantBalancerAbortCompletedMovement", self->tbi.id())
 				    .detail("MovementId", req.movementId)
 				    .detail("Prefix", req.prefix);
 				wait(clearTenant(self, mutableRecord, MovementLocation::DEST, false, true));
-				abortResult = AbortResult::COMPLETED;
+				abortResult = AbortState::COMPLETED;
 			} else {
+				if (req.abortInstruction == AbortState::COMPLETED) {
+					throw movement_abort_error();
+				}
 				wait(rollbackMovement(self, mutableRecord, true, &abortResult));
 			}
 		}

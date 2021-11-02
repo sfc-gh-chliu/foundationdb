@@ -191,6 +191,8 @@ enum {
 	// DB movements
 	OPT_UNLOCK_TENANT,
 	OPT_ERASE_TENANT,
+	OPT_FORCE_COMPLETE,
+	OPT_FORCE_ROLLBACK,
 
 	OPT_TRACE_FORMAT,
 };
@@ -1027,6 +1029,8 @@ CSimpleOpt::SOption g_rgDBMoveAbortOptions[] = {
 	{ OPT_KNOB, "--knob_", SO_REQ_SEP },
 	{ OPT_PREFIX, "--prefix", SO_REQ_SEP },
 	{ OPT_DESTINATION_PREFIX, "--destination_prefix", SO_REQ_SEP },
+	{ OPT_FORCE_COMPLETE, "--force_complete", SO_NONE },
+	{ OPT_FORCE_ROLLBACK, "--force_rollback", SO_NONE },
 #ifndef TLS_DISABLED
 	TLS_OPTION_FLAGS
 #endif
@@ -2366,12 +2370,12 @@ ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> ma
 	return Void();
 }
 
-ACTOR Future<AbortResult> abortDBMove(Database database,
-                                      Key prefix,
-                                      MovementLocation location,
-                                      AbortResult peerAbortResult) {
+ACTOR Future<AbortState> abortDBMove(Database database,
+                                     Key prefix,
+                                     MovementLocation location,
+                                     AbortState abortInstruction) {
 	state AbortMovementRequest abortMovementRequest(prefix, location);
-	abortMovementRequest.peerAbortResult = peerAbortResult;
+	abortMovementRequest.abortInstruction = abortInstruction;
 	state Future<ErrorOr<AbortMovementReply>> abortMovementReply = Never();
 	state Future<Void> initialize = Void();
 	loop choose {
@@ -2394,18 +2398,22 @@ ACTOR Future<AbortResult> abortDBMove(Database database,
 ACTOR Future<Void> abortDBMove(Optional<Database> src,
                                Optional<Database> dest,
                                Optional<Key> sourcePrefix,
-                               Optional<Key> destinationPrefix) {
+                               Optional<Key> destinationPrefix,
+                               AbortState abortInstruction) {
 	ASSERT(src.present() || dest.present());
 
 	try {
-		state AbortResult destAbortResult = AbortResult::UNKNOWN;
+		state AbortState destAbortResult = AbortState::UNKNOWN;
 		if (dest.present() && destinationPrefix.present()) {
-			state AbortResult tempDestAbortResult =
-			    wait(abortDBMove(dest.get(), destinationPrefix.get(), MovementLocation::DEST, AbortResult::UNKNOWN));
+			state AbortState tempDestAbortResult =
+			    wait(abortDBMove(dest.get(), destinationPrefix.get(), MovementLocation::DEST, abortInstruction));
+			if (tempDestAbortResult == AbortState::ERROR) {
+				throw movement_abort_error();
+			}
 			destAbortResult = tempDestAbortResult;
 
 			if (!src.present()) {
-				if (tempDestAbortResult == AbortResult::COMPLETED) {
+				if (tempDestAbortResult == AbortState::COMPLETED) {
 					printf("The movement in the destination luster is already completed.\n");
 				} else {
 					printf("The movement in the destination luster is rolled back.");
@@ -2413,15 +2421,22 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 			}
 		}
 		if (src.present() && sourcePrefix.present()) {
-			state AbortResult tempSrcAbortResult =
-			    wait(abortDBMove(src.get(), sourcePrefix.get(), MovementLocation::SOURCE, destAbortResult));
+			state AbortState tempSrcAbortResult =
+			    wait(abortDBMove(src.get(),
+			                     sourcePrefix.get(),
+			                     MovementLocation::SOURCE,
+			                     dest.present() ? destAbortResult : abortInstruction));
 
+			if (tempSrcAbortResult == AbortState::ERROR) {
+				throw movement_abort_error();
+			}
 			std::string msg = "To delete and/or unlock the source data, please run the clean command.";
-			if (tempSrcAbortResult == AbortResult::COMPLETED) {
+			if (tempSrcAbortResult == AbortState::COMPLETED) {
 				printf("The movement in the source luster is already completed. %s\n", msg.c_str());
-			} else if (tempSrcAbortResult == AbortResult::UNKNOWN) {
-				printf("It could not be determined whether the movement has completed in the source cluster. %s\n",
-				       msg.c_str());
+			} else if (tempSrcAbortResult == AbortState::UNKNOWN) {
+				printf("It could not be determined whether the movement has completed in the source cluster. \n"
+				       "To force the movement to complete, please rerun the abort command with [--force_complete].\n"
+				       "To force the movement to roll back, please rerun the abort command with [--force_rollback]");
 			} else {
 				printf("The movement in the source luster is rolled back.");
 			}
@@ -3987,6 +4002,10 @@ int main(int argc, char* argv[]) {
 		Optional<double> maxLagSec;
 
 		// For data movement clean subcommand
+		bool forceComplete = false;
+		bool forceRollback = false;
+
+		// For data movement clean subcommand
 		bool unlockTenant = false;
 		bool eraseTenant = false;
 
@@ -4387,6 +4406,12 @@ int main(int argc, char* argv[]) {
 				break;
 			case OPT_ERASE_TENANT:
 				eraseTenant = true;
+				break;
+			case OPT_FORCE_COMPLETE:
+				forceComplete = true;
+				break;
+			case OPT_FORCE_ROLLBACK:
+				forceRollback = true;
 				break;
 			}
 		}
@@ -5001,6 +5026,10 @@ int main(int argc, char* argv[]) {
 				f = stopAfter(finishDBMove(sourceDb, Key(prefix.get()), maxLagSec));
 				break;
 			case DBMoveType::ABORT: {
+				if (forceComplete && forceRollback) {
+					fprintf(stderr, "ERROR: --force_complete and --force_rollback can't be specified together\n");
+					return FDB_EXIT_ERROR;
+				}
 				bool canInitCluster = initCluster(true);
 				bool canInitSourceCluster = initSourceCluster(true, true);
 				if (!canInitCluster && !canInitSourceCluster) {
@@ -5024,7 +5053,10 @@ int main(int argc, char* argv[]) {
 				f = stopAfter(abortDBMove(canInitSourceCluster ? sourceDb : Optional<Database>(),
 				                          canInitCluster ? db : Optional<Database>(),
 				                          prefix.map<Key>([](auto s) { return Key(s); }),
-				                          destinationPrefix.map<Key>([](auto s) { return Key(s); })));
+				                          destinationPrefix.map<Key>([](auto s) { return Key(s); }),
+				                          forceComplete   ? AbortState::COMPLETED
+				                          : forceRollback ? AbortState::ROLLED_BACK
+				                                          : AbortState::UNKNOWN));
 				break;
 			}
 			case DBMoveType::CLEAN:
