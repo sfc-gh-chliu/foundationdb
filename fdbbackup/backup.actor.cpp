@@ -2375,36 +2375,28 @@ ACTOR Future<Optional<UID>> getValidMovementId(Optional<Database> src,
                                                Optional<Database> dest,
                                                Optional<Key> sourcePrefix,
                                                Optional<Key> destinationPrefix) {
-	state UID sourceUid, destUid;
+	state UID sourceUid, destinationUid;
 	if (src.present()) {
 		ASSERT(sourcePrefix.present());
-		state std::vector<TenantMovementInfo> srcMovements =
-		    wait(getActiveMovements(src.get(), Optional<std::string>(), MovementLocation::SOURCE, sourcePrefix));
-		if (srcMovements.size() != 1) {
-			return Optional<UID>();
-		}
-		sourceUid = srcMovements[0].movementId;
+		state TenantMovementStatus srcMovementStatus =
+		    wait(getMovementStatus(src.get(), sourcePrefix.get(), MovementLocation::SOURCE));
+		sourceUid = srcMovementStatus.tenantMovementInfo.movementId;
 	}
 	if (dest.present()) {
 		ASSERT(destinationPrefix.present());
-		state std::vector<TenantMovementInfo> destMovements =
-		    wait(getActiveMovements(dest.get(), Optional<std::string>(), MovementLocation::DEST, destinationPrefix));
-		if (destMovements.size() != 1) {
-			return Optional<UID>();
-		}
-		destUid = destMovements[0].movementId;
+		state TenantMovementStatus destMovementStatus =
+		    wait(getMovementStatus(dest.get(), destinationPrefix.get(), MovementLocation::DEST));
+		destinationUid = destMovementStatus.tenantMovementInfo.movementId;
 	}
-	if (src.present() && dest.present()) {
-		return sourceUid == destUid ? sourceUid : Optional<UID>();
-	} else if (src.present()) {
+	if (!src.present()) {
+		return destinationUid;
+	} else if (!dest.present()) {
 		return sourceUid;
-	} else if (dest.present()) {
-		return destUid;
 	}
-	return Optional<UID>();
+	return sourceUid == destinationUid ? sourceUid : Optional<UID>();
 }
 
-ACTOR Future<Void> abortDBMove(Database database, Key prefix, MovementLocation location) {
+ACTOR Future<Void> abortDBMove(Database database, Key prefix, MovementLocation location, Optional<UID> uid) {
 	state AbortMovementRequest abortMovementRequest(prefix, location);
 	abortMovementRequest.abortInstruction = abortInstruction;
 	state Future<ErrorOr<AbortMovementReply>> abortMovementReply = Never();
