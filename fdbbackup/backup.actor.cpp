@@ -2402,38 +2402,29 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
                                AbortState abortInstruction) {
 	ASSERT(src.present() || dest.present());
 
+	state bool destinationAbortError = true;
 	try {
 		state AbortState destAbortResult = AbortState::UNKNOWN;
 		if (dest.present() && destinationPrefix.present()) {
 			state AbortState tempDestAbortResult =
 			    wait(abortDBMove(dest.get(), destinationPrefix.get(), MovementLocation::DEST, abortInstruction));
-			if (tempDestAbortResult == AbortState::ERROR) {
-				printf("The abort in the destination cluster is failed. Please run abort command again with correct "
-				       "flags.");
-				throw movement_abort_error();
-			}
 			destAbortResult = tempDestAbortResult;
-
 			if (!src.present()) {
-				if (tempDestAbortResult == AbortState::COMPLETED) {
+				if (destAbortResult == AbortState::COMPLETED) {
 					printf("The movement in the destination cluster is already completed.\n");
 				} else {
 					printf("The movement in the destination cluster is rolled back.");
 				}
 			}
 		}
+		destinationAbortError = false;
+
 		if (src.present() && sourcePrefix.present()) {
 			state AbortState tempSrcAbortResult =
 			    wait(abortDBMove(src.get(),
 			                     sourcePrefix.get(),
 			                     MovementLocation::SOURCE,
 			                     dest.present() ? destAbortResult : abortInstruction));
-
-			if (tempSrcAbortResult == AbortState::ERROR) {
-				printf("The abort in the destination cluster is successful. However it's failed in "
-				       "the source cluster. Please run abort command again for the source cluster with correct flags.");
-				throw movement_abort_error();
-			}
 			std::string msg = "To delete and/or unlock the source data, please run the clean command.";
 			if (tempSrcAbortResult == AbortState::COMPLETED) {
 				printf("The movement in the source cluster is already completed. %s\n", msg.c_str());
@@ -2449,7 +2440,22 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 	} catch (Error& e) {
 		if (e.code() == error_code_actor_cancelled)
 			throw;
-
+		if (e.code() == error_code_movement_abort_error) {
+			if (destinationAbortError) {
+				if (abortInstruction == AbortState::COMPLETED) {
+					printf("The destination movement isn't able to be forced to complete.\n");
+				} else if (abortInstruction == AbortState::ROLLED_BACK) {
+					printf("The destination movement isn't able to be forced to rollback.\n");
+				}
+			} else {
+				// Error happens in the source abort process
+				if (abortInstruction == AbortState::COMPLETED) {
+					printf("The source movement isn't able to be forced to complete.\n");
+				} else if (abortInstruction == AbortState::ROLLED_BACK) {
+					printf("The source movement isn't able to be forced to rollback.\n");
+				}
+			}
+		}
 		fprintf(stderr, "ERROR: %s\n", e.what());
 	}
 

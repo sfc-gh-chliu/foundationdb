@@ -32,7 +32,7 @@
 // extern enum class MovementState;
 enum class MovementState { INITIALIZING, STARTED, READY_FOR_SWITCH, SWITCHING, COMPLETED, ERROR };
 enum class MovementLocation { SOURCE, DEST };
-enum class AbortState { UNKNOWN, ROLLED_BACK, COMPLETED, ERROR };
+enum class AbortState { UNKNOWN, ROLLED_BACK, COMPLETED };
 
 struct TenantBalancerInterface {
 	constexpr static FileIdentifier file_identifier = 6185894;
