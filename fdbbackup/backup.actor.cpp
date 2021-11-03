@@ -2408,15 +2408,17 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 			state AbortState tempDestAbortResult =
 			    wait(abortDBMove(dest.get(), destinationPrefix.get(), MovementLocation::DEST, abortInstruction));
 			if (tempDestAbortResult == AbortState::ERROR) {
+				printf("The abort in the destination cluster is failed. Please run abort command again with correct "
+				       "flags.");
 				throw movement_abort_error();
 			}
 			destAbortResult = tempDestAbortResult;
 
 			if (!src.present()) {
 				if (tempDestAbortResult == AbortState::COMPLETED) {
-					printf("The movement in the destination luster is already completed.\n");
+					printf("The movement in the destination cluster is already completed.\n");
 				} else {
-					printf("The movement in the destination luster is rolled back.");
+					printf("The movement in the destination cluster is rolled back.");
 				}
 			}
 		}
@@ -2428,17 +2430,19 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 			                     dest.present() ? destAbortResult : abortInstruction));
 
 			if (tempSrcAbortResult == AbortState::ERROR) {
+				printf("The abort in the destination cluster is successful. However it's failed in "
+				       "the source cluster. Please run abort command again for the source cluster with correct flags.");
 				throw movement_abort_error();
 			}
 			std::string msg = "To delete and/or unlock the source data, please run the clean command.";
 			if (tempSrcAbortResult == AbortState::COMPLETED) {
-				printf("The movement in the source luster is already completed. %s\n", msg.c_str());
+				printf("The movement in the source cluster is already completed. %s\n", msg.c_str());
 			} else if (tempSrcAbortResult == AbortState::UNKNOWN) {
 				printf("It could not be determined whether the movement has completed in the source cluster. \n"
 				       "To force the movement to complete, please rerun the abort command with [--force_complete].\n"
 				       "To force the movement to roll back, please rerun the abort command with [--force_rollback]");
 			} else {
-				printf("The movement in the source luster is rolled back.");
+				printf("The movement in the source cluster is rolled back.");
 			}
 		}
 		printf("The data movement was successfully aborted.\n");
