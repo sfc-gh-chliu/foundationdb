@@ -2405,35 +2405,37 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 	state bool destinationAbortError = true;
 	try {
 		state AbortState destAbortResult = AbortState::UNKNOWN;
-		if (dest.present() && destinationPrefix.present()) {
-			state AbortState tempDestAbortResult =
+		if (dest.present()) {
+			ASSERT(destinationPrefix.present());
+			AbortState tempDestAbortResult =
 			    wait(abortDBMove(dest.get(), destinationPrefix.get(), MovementLocation::DEST, abortInstruction));
 			destAbortResult = tempDestAbortResult;
 			if (!src.present()) {
 				if (destAbortResult == AbortState::COMPLETED) {
-					printf("The movement in the destination cluster is already completed.\n");
+					printf("The movement has already completed.\n");
 				} else {
-					printf("The movement in the destination cluster is rolled back.");
+					printf("The movement has been rolled back on the destination cluster.\n");
 				}
 			}
 		}
 		destinationAbortError = false;
 
-		if (src.present() && sourcePrefix.present()) {
-			state AbortState tempSrcAbortResult =
-			    wait(abortDBMove(src.get(),
-			                     sourcePrefix.get(),
-			                     MovementLocation::SOURCE,
-			                     dest.present() ? destAbortResult : abortInstruction));
+		if (src.present()) {
+			ASSERT(sourcePrefix.present());
+			AbortState tempSrcAbortResult = wait(abortDBMove(src.get(),
+			                                                 sourcePrefix.get(),
+			                                                 MovementLocation::SOURCE,
+			                                                 dest.present() ? destAbortResult : abortInstruction));
 			std::string msg = "To delete and/or unlock the source data, please run the clean command.";
 			if (tempSrcAbortResult == AbortState::COMPLETED) {
-				printf("The movement in the source cluster is already completed. %s\n", msg.c_str());
+				printf("The movement has already completed. %s\n", msg.c_str());
 			} else if (tempSrcAbortResult == AbortState::UNKNOWN) {
-				printf("It could not be determined whether the movement has completed in the source cluster. \n"
-				       "To force the movement to complete, please rerun the abort command with [--force_complete].\n"
-				       "To force the movement to roll back, please rerun the abort command with [--force_rollback]");
+				printf("It could not be determined whether the movement has completed.\n"
+				       "To force the movement to complete, please rerun the abort command with --force_complete.\n"
+				       "To force the movement to roll back, please rerun the abort command with --force_rollback.\n");
 			} else {
-				printf("The movement in the source cluster is rolled back.");
+				printf("The movement has been rolled back%s.\n",
+				       (!dest.present() || destAbortResult != AbortState::ROLLED_BACK ? " in the source cluster" : ""));
 			}
 		}
 		printf("The data movement was successfully aborted.\n");

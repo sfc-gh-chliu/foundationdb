@@ -425,7 +425,7 @@ struct AbortMovementReply {
 	AbortState abortResult;
 
 	AbortMovementReply() {}
-
+	AbortMovementReply(AbortState abortResult) : abortResult(abortResult) {}
 	template <class Ar>
 	void serialize(Ar& ar) {
 		serializer(ar, abortResult);

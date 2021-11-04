@@ -160,7 +160,6 @@ public:
 	void abort() const {
 		if (!abortPromise.isSet()) {
 			abortPromise.sendError(movement_aborted());
-			return;
 		}
 	}
 
@@ -1694,7 +1693,7 @@ ACTOR Future<Void> clearTenant(TenantBalancer* self,
 		KeyRange rangeToErase = prefixRange(targetPrefix);
 		wait(waitOrError(runTenantBalancerTransaction<Void>(self->db,
 		                                                    self->tbi.id(),
-		                                                    "CleanupMovementSourceErase",
+		                                                    "CleanrTenantErase",
 		                                                    [rangeToErase](Reference<ReadYourWritesTransaction> tr) {
 			                                                    tr->clear(rangeToErase);
 			                                                    return tr->commit();
@@ -1718,23 +1717,21 @@ ACTOR Future<Void> clearTenant(TenantBalancer* self,
 	return Void();
 }
 
-ACTOR Future<Void> rollbackMovement(TenantBalancer* self,
-                                    Reference<MovementRecordMap::MutableRecord> mutableRecord,
-                                    bool eraseData,
-                                    AbortState* abortResult) {
+ACTOR Future<AbortState> rollbackMovement(TenantBalancer* self,
+                                          Reference<MovementRecordMap::MutableRecord> mutableRecord,
+                                          bool eraseData) {
 	state Reference<MovementRecord> record = mutableRecord->record;
 	TraceEvent(SevDebug, "TenantBalancerRollbackMovement", self->tbi.id())
 	    .detail("MovementId", record->getMovementId())
 	    .detail("MovementStatus", TenantBalancerInterface::movementStateToString(record->movementState))
-	    .detail("sourcePrefix", record->getSourcePrefix())
-	    .detail("destinationPreifx", record->getDestinationPrefix());
+	    .detail("SourcePrefix", record->getSourcePrefix())
+	    .detail("DestinationPreifx", record->getDestinationPrefix());
 	ErrorOr<Void> result = wait(abortDr(self, record));
 	if (result.isError() && result.getError().code() != error_code_backup_unneeded) {
 		throw result.getError();
 	}
 	wait(clearTenant(self, mutableRecord, MovementLocation::DEST, eraseData, true));
-	*abortResult = AbortState::ROLLED_BACK;
-	return Void();
+	return AbortState::ROLLED_BACK;
 }
 
 ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req) {
@@ -1771,7 +1768,8 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 					wait(self->saveMovementRecord(mutableRecord));
 				} else if (req.abortInstruction == AbortState::ROLLED_BACK) {
 					// Abort instruction is rolled back
-					wait(rollbackMovement(self, mutableRecord, false, &abortResult));
+					AbortState tempAbortState = wait(rollbackMovement(self, mutableRecord, false));
+					abortResult = tempAbortState;
 				} else {
 					// There isn't any previous destination abort
 					ErrorOr<Void> result = wait(abortDr(self, record));
@@ -1785,7 +1783,8 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 				if (req.abortInstruction == AbortState::COMPLETED) {
 					throw movement_abort_error();
 				}
-				wait(rollbackMovement(self, mutableRecord, false, &abortResult));
+				AbortState tempAbortState = wait(rollbackMovement(self, mutableRecord, false));
+				abortResult = tempAbortState;
 			}
 		} else {
 			// Destination cluster
@@ -1802,7 +1801,8 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 				if (req.abortInstruction == AbortState::COMPLETED) {
 					throw movement_abort_error();
 				}
-				wait(rollbackMovement(self, mutableRecord, true, &abortResult));
+				AbortState tempAbortState = wait(rollbackMovement(self, mutableRecord, true));
+				abortResult = tempAbortState;
 			}
 		}
 
@@ -1815,8 +1815,7 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 		    .detail("PeerConnectionString",
 		            record->getPeerDatabase()->getConnectionRecord()->getConnectionString().toString());
 
-		AbortMovementReply reply;
-		reply.abortResult = abortResult;
+		AbortMovementReply reply(abortResult);
 		req.reply.send(reply);
 	} catch (Error& e) {
 		TraceEvent(SevDebug, "TenantBalancerAbortError", self->tbi.id())
