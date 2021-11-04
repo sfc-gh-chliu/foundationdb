@@ -2371,31 +2371,6 @@ ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> ma
 	return Void();
 }
 
-ACTOR Future<Optional<UID>> getValidMovementId(Optional<Database> src,
-                                               Optional<Database> dest,
-                                               Optional<Key> sourcePrefix,
-                                               Optional<Key> destinationPrefix) {
-	state UID sourceUid, destinationUid;
-	if (src.present()) {
-		ASSERT(sourcePrefix.present());
-		state TenantMovementStatus srcMovementStatus =
-		    wait(getMovementStatus(src.get(), sourcePrefix.get(), MovementLocation::SOURCE));
-		sourceUid = srcMovementStatus.tenantMovementInfo.movementId;
-	}
-	if (dest.present()) {
-		ASSERT(destinationPrefix.present());
-		state TenantMovementStatus destMovementStatus =
-		    wait(getMovementStatus(dest.get(), destinationPrefix.get(), MovementLocation::DEST));
-		destinationUid = destMovementStatus.tenantMovementInfo.movementId;
-	}
-	if (!src.present()) {
-		return destinationUid;
-	} else if (!dest.present()) {
-		return sourceUid;
-	}
-	return sourceUid == destinationUid ? sourceUid : Optional<UID>();
-}
-
 ACTOR Future<Void> abortDBMove(Database database, Key prefix, MovementLocation location, Optional<UID> uid) {
 	state AbortMovementRequest abortMovementRequest(prefix, location);
 	abortMovementRequest.abortInstruction = abortInstruction;
@@ -2478,6 +2453,18 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 				} else if (abortInstruction == AbortState::ROLLED_BACK) {
 					printf("The source movement isn't able to be forced to rollback.\n");
 				}
+			}
+		}
+		else if (e.code() == error_code_movement_not_found) {
+			if (!movementFound) {
+				std::string errorLocationMsg = (!src.present()    ? "the destination cluster"
+				                                : !dest.present() ? "the source cluster"
+				                                                  : "the source and the destination cluster");
+				fprintf(stderr, "The movement on %s can't be found.\n", errorLocationMsg.c_str());
+			} else if (destMovementStatus.tenantMovementInfo.movementState == MovementState::COMPLETED) {
+				fprintf(stderr, "The data movement record is finished during the abort process.");
+			} else {
+				fprintf(stderr, "The data movement record is erased during the abort process.");
 			}
 		}
 		fprintf(stderr, "ERROR: %s\n", e.what());
