@@ -2371,7 +2371,7 @@ ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> ma
 	return Void();
 }
 
-ACTOR Future<Void> abortDBMove(Database database, Key prefix, MovementLocation location, Optional<UID> uid) {
+ACTOR Future<AbortState> abortDBMove(Database database, Key prefix, MovementLocation location, Optional<UID> uid, AbortState abortInstruction) {
 	state AbortMovementRequest abortMovementRequest(prefix, location);
 	abortMovementRequest.abortInstruction = abortInstruction;
 	state Future<ErrorOr<AbortMovementReply>> abortMovementReply = Never();
@@ -2399,14 +2399,36 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
                                Optional<Key> destinationPrefix,
                                AbortState abortInstruction) {
 	ASSERT(src.present() || dest.present());
-
+	state bool movementFound = false;
 	state bool destinationAbortError = true;
+	state TenantMovementStatus srcMovementStatus;
+	state TenantMovementStatus destMovementStatus;
 	try {
+		state std::vector<Future<TenantMovementStatus>> movementStatuses;
+		if (src.present()) {
+			ASSERT(sourcePrefix.present());
+			movementStatuses.push_back(getMovementStatus(src.get(), sourcePrefix.get(), MovementLocation::SOURCE));
+		}
+		if (dest.present()) {
+			ASSERT(destinationPrefix.present());
+			movementStatuses.push_back(getMovementStatus(dest.get(), destinationPrefix.get(), MovementLocation::DEST));
+		}
+		wait(waitForAll(movementStatuses));
+		int tempIndex = 0;
+		if(src.present()){
+			srcMovementStatus = movementStatuses[tempIndex++].get();
+		}
+		if(dest.present()){
+			destMovementStatus = movementStatuses[tempIndex++].get();
+		}
+		movementFound = true;
+		state UID targetUid = !src.present() ? destMovementStatus.tenantMovementInfo.movementId
+		                                     : srcMovementStatus.tenantMovementInfo.movementId;
 		state AbortState destAbortResult = AbortState::UNKNOWN;
 		if (dest.present()) {
 			ASSERT(destinationPrefix.present());
 			AbortState tempDestAbortResult =
-			    wait(abortDBMove(dest.get(), destinationPrefix.get(), MovementLocation::DEST, abortInstruction));
+			    wait(abortDBMove(dest.get(), destinationPrefix.get(), MovementLocation::DEST,targetUid, abortInstruction));
 			destAbortResult = tempDestAbortResult;
 			if (!src.present()) {
 				if (destAbortResult == AbortState::COMPLETED) {
@@ -2415,6 +2437,10 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 					printf("The movement has been rolled back on the destination cluster.\n");
 				}
 			}
+		if (src.present() && dest.present() &&
+		    srcMovementStatus.tenantMovementInfo.movementId != destMovementStatus.tenantMovementInfo.movementId) {
+			printf("The data movements taking place on the specified prefixes do not match. The movement id of the source cluster is %s. The movement id of the destination cluster is %s. Confirm that you have specified the correct clusters and prefixes for the movement you wish to abort.\n",srcMovementStatus.tenantMovementInfo.movementId,destMovementStatus.tenantMovementInfo.movementId);
+			return Void();
 		}
 		destinationAbortError = false;
 
@@ -2423,6 +2449,7 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 			AbortState srcAbortResult = wait(abortDBMove(src.get(),
 			                                             sourcePrefix.get(),
 			                                             MovementLocation::SOURCE,
+														 targetUid,
 			                                             dest.present() ? destAbortResult : abortInstruction));
 			std::string msg = "To delete and/or unlock the source data, please run the clean command.";
 			if (srcAbortResult == AbortState::COMPLETED) {
@@ -2462,7 +2489,7 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 				                                                  : "the source and the destination cluster");
 				fprintf(stderr, "The movement on %s can't be found.\n", errorLocationMsg.c_str());
 			} else if (destMovementStatus.tenantMovementInfo.movementState == MovementState::COMPLETED) {
-				fprintf(stderr, "The data movement record is finished during the abort process.");
+				printf("The data movement record is finished during the abort process.");
 			} else {
 				fprintf(stderr, "The data movement record is erased during the abort process.");
 			}
