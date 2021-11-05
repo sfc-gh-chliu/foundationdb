@@ -2422,20 +2422,19 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 
 		if (src.present()) {
 			ASSERT(sourcePrefix.present());
-			AbortState tempSrcAbortResult = wait(abortDBMove(src.get(),
-			                                                 sourcePrefix.get(),
-			                                                 MovementLocation::SOURCE,
-			                                                 dest.present() ? destAbortResult : abortInstruction));
+			AbortState srcAbortResult = wait(abortDBMove(src.get(),
+			                                             sourcePrefix.get(),
+			                                             MovementLocation::SOURCE,
+			                                             dest.present() ? destAbortResult : abortInstruction));
 			std::string msg = "To delete and/or unlock the source data, please run the clean command.";
-			if (tempSrcAbortResult == AbortState::COMPLETED) {
+			if (srcAbortResult == AbortState::COMPLETED) {
 				printf("The movement has already completed. %s\n", msg.c_str());
-			} else if (tempSrcAbortResult == AbortState::UNKNOWN) {
+			} else if (srcAbortResult == AbortState::UNKNOWN) {
 				printf("It could not be determined whether the movement has completed.\n"
 				       "To force the movement to complete, please rerun the abort command with --force_complete.\n"
 				       "To force the movement to roll back, please rerun the abort command with --force_rollback.\n");
 			} else {
-				printf("The movement has been rolled back%s.\n",
-				       (!dest.present() || destAbortResult != AbortState::ROLLED_BACK ? " in the source cluster" : ""));
+				printf("The movement has been rolled back%s.\n", (!dest.present() ? " in the source cluster" : ""));
 			}
 		}
 		printf("The data movement was successfully aborted.\n");

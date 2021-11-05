@@ -1693,7 +1693,7 @@ ACTOR Future<Void> clearTenant(TenantBalancer* self,
 		KeyRange rangeToErase = prefixRange(targetPrefix);
 		wait(waitOrError(runTenantBalancerTransaction<Void>(self->db,
 		                                                    self->tbi.id(),
-		                                                    "CleanrTenantErase",
+		                                                    "cleanrTenantErase",
 		                                                    [rangeToErase](Reference<ReadYourWritesTransaction> tr) {
 			                                                    tr->clear(rangeToErase);
 			                                                    return tr->commit();
@@ -1717,9 +1717,9 @@ ACTOR Future<Void> clearTenant(TenantBalancer* self,
 	return Void();
 }
 
-ACTOR Future<AbortState> rollbackMovement(TenantBalancer* self,
-                                          Reference<MovementRecordMap::MutableRecord> mutableRecord,
-                                          bool eraseData) {
+ACTOR Future<Void> rollbackMovement(TenantBalancer* self,
+                                    Reference<MovementRecordMap::MutableRecord> mutableRecord,
+                                    bool eraseData) {
 	state Reference<MovementRecord> record = mutableRecord->record;
 	TraceEvent(SevDebug, "TenantBalancerRollbackMovement", self->tbi.id())
 	    .detail("MovementId", record->getMovementId())
@@ -1731,7 +1731,7 @@ ACTOR Future<AbortState> rollbackMovement(TenantBalancer* self,
 		throw result.getError();
 	}
 	wait(clearTenant(self, mutableRecord, MovementLocation::DEST, eraseData, true));
-	return AbortState::ROLLED_BACK;
+	return Void();
 }
 
 ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req) {
@@ -1743,10 +1743,10 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 	    .detail("Prefix", req.prefix);
 
 	try {
-		state Reference<MovementRecordMap::MutableRecord> mutableRecord =
-		    wait(self->mutateMovement(req.movementLocation, req.prefix));
-		state Reference<MovementRecord> record = mutableRecord->record;
+		state Reference<MovementRecord> record = self->getMovementSnapshot(req.movementLocation, req.prefix)->clone();
 		record->abort(); // abort other in-flight movements
+		Reference<MovementRecordMap::MutableRecord> mutableRecord =
+		    wait(self->mutateMovement(req.movementLocation, req.prefix)); // wait until other finished
 
 		state AbortState abortResult = AbortState::UNKNOWN;
 		if (record->getMovementLocation() == MovementLocation::SOURCE) {
@@ -1768,8 +1768,8 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 					wait(self->saveMovementRecord(mutableRecord));
 				} else if (req.abortInstruction == AbortState::ROLLED_BACK) {
 					// Abort instruction is rolled back
-					AbortState tempAbortState = wait(rollbackMovement(self, mutableRecord, false));
-					abortResult = tempAbortState;
+					wait(rollbackMovement(self, mutableRecord, false));
+					abortResult = AbortState::ROLLED_BACK;
 				} else {
 					// There isn't any previous destination abort
 					ErrorOr<Void> result = wait(abortDr(self, record));
@@ -1783,8 +1783,8 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 				if (req.abortInstruction == AbortState::COMPLETED) {
 					throw movement_abort_error();
 				}
-				AbortState tempAbortState = wait(rollbackMovement(self, mutableRecord, false));
-				abortResult = tempAbortState;
+				wait(rollbackMovement(self, mutableRecord, false));
+				abortResult = AbortState::ROLLED_BACK;
 			}
 		} else {
 			// Destination cluster
@@ -1801,8 +1801,8 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 				if (req.abortInstruction == AbortState::COMPLETED) {
 					throw movement_abort_error();
 				}
-				AbortState tempAbortState = wait(rollbackMovement(self, mutableRecord, true));
-				abortResult = tempAbortState;
+				wait(rollbackMovement(self, mutableRecord, true));
+				abortResult = AbortState::ROLLED_BACK;
 			}
 		}
 
