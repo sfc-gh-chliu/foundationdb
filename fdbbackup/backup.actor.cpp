@@ -191,6 +191,8 @@ enum {
 	// DB movements
 	OPT_UNLOCK_TENANT,
 	OPT_ERASE_TENANT,
+	OPT_FORCE_COMPLETE,
+	OPT_FORCE_ROLLBACK,
 
 	OPT_TRACE_FORMAT,
 };
@@ -1027,6 +1029,8 @@ CSimpleOpt::SOption g_rgDBMoveAbortOptions[] = {
 	{ OPT_KNOB, "--knob_", SO_REQ_SEP },
 	{ OPT_PREFIX, "--prefix", SO_REQ_SEP },
 	{ OPT_DESTINATION_PREFIX, "--destination_prefix", SO_REQ_SEP },
+	{ OPT_FORCE_COMPLETE, "--force_complete", SO_NONE },
+	{ OPT_FORCE_ROLLBACK, "--force_rollback", SO_NONE },
 #ifndef TLS_DISABLED
 	TLS_OPTION_FLAGS
 #endif
@@ -2366,8 +2370,12 @@ ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> ma
 	return Void();
 }
 
-ACTOR Future<Void> abortDBMove(Database database, Key prefix, MovementLocation location) {
+ACTOR Future<AbortState> abortDBMove(Database database,
+                                     Key prefix,
+                                     MovementLocation location,
+                                     AbortState abortInstruction) {
 	state AbortMovementRequest abortMovementRequest(prefix, location);
+	abortMovementRequest.abortInstruction = abortInstruction;
 	state Future<ErrorOr<AbortMovementReply>> abortMovementReply = Never();
 	state Future<Void> initialize = Void();
 	loop choose {
@@ -2375,7 +2383,7 @@ ACTOR Future<Void> abortDBMove(Database database, Key prefix, MovementLocation l
 			if (reply.isError()) {
 				throw reply.getError();
 			}
-			return Void();
+			return reply.get().abortResult;
 		}
 		when(wait(database->onTenantBalancerChanged() || initialize)) {
 			initialize = Never();
@@ -2390,21 +2398,65 @@ ACTOR Future<Void> abortDBMove(Database database, Key prefix, MovementLocation l
 ACTOR Future<Void> abortDBMove(Optional<Database> src,
                                Optional<Database> dest,
                                Optional<Key> sourcePrefix,
-                               Optional<Key> destinationPrefix) {
+                               Optional<Key> destinationPrefix,
+                               AbortState abortInstruction) {
 	ASSERT(src.present() || dest.present());
 
+	state bool destinationAbortError = true;
 	try {
-		if (src.present() && sourcePrefix.present()) {
-			wait(abortDBMove(src.get(), sourcePrefix.get(), MovementLocation::SOURCE));
+		state AbortState destAbortResult = AbortState::UNKNOWN;
+		if (dest.present()) {
+			ASSERT(destinationPrefix.present());
+			AbortState tempDestAbortResult =
+			    wait(abortDBMove(dest.get(), destinationPrefix.get(), MovementLocation::DEST, abortInstruction));
+			destAbortResult = tempDestAbortResult;
+			if (!src.present()) {
+				if (destAbortResult == AbortState::COMPLETED) {
+					printf("The movement has already completed.\n");
+				} else {
+					printf("The movement has been rolled back on the destination cluster.\n");
+				}
+			}
 		}
-		if (dest.present() && destinationPrefix.present()) {
-			wait(abortDBMove(dest.get(), destinationPrefix.get(), MovementLocation::DEST));
+		destinationAbortError = false;
+
+		if (src.present()) {
+			ASSERT(sourcePrefix.present());
+			AbortState srcAbortResult = wait(abortDBMove(src.get(),
+			                                             sourcePrefix.get(),
+			                                             MovementLocation::SOURCE,
+			                                             dest.present() ? destAbortResult : abortInstruction));
+			std::string msg = "To delete and/or unlock the source data, please run the clean command.";
+			if (srcAbortResult == AbortState::COMPLETED) {
+				printf("The movement has already completed. %s\n", msg.c_str());
+			} else if (srcAbortResult == AbortState::UNKNOWN) {
+				printf("It could not be determined whether the movement has completed.\n"
+				       "To force the movement to complete, please rerun the abort command with --force_complete.\n"
+				       "To force the movement to roll back, please rerun the abort command with --force_rollback.\n");
+			} else {
+				printf("The movement has been rolled back%s.\n", (!dest.present() ? " in the source cluster" : ""));
+			}
 		}
 		printf("The data movement was successfully aborted.\n");
 	} catch (Error& e) {
 		if (e.code() == error_code_actor_cancelled)
 			throw;
-
+		if (e.code() == error_code_movement_abort_error) {
+			if (destinationAbortError) {
+				if (abortInstruction == AbortState::COMPLETED) {
+					printf("The destination movement isn't able to be forced to complete.\n");
+				} else if (abortInstruction == AbortState::ROLLED_BACK) {
+					printf("The destination movement isn't able to be forced to rollback.\n");
+				}
+			} else {
+				// Error happens in the source abort process
+				if (abortInstruction == AbortState::COMPLETED) {
+					printf("The source movement isn't able to be forced to complete.\n");
+				} else if (abortInstruction == AbortState::ROLLED_BACK) {
+					printf("The source movement isn't able to be forced to rollback.\n");
+				}
+			}
+		}
 		fprintf(stderr, "ERROR: %s\n", e.what());
 	}
 
@@ -3961,6 +4013,10 @@ int main(int argc, char* argv[]) {
 		Optional<double> maxLagSec;
 
 		// For data movement clean subcommand
+		bool forceComplete = false;
+		bool forceRollback = false;
+
+		// For data movement clean subcommand
 		bool unlockTenant = false;
 		bool eraseTenant = false;
 
@@ -4361,6 +4417,12 @@ int main(int argc, char* argv[]) {
 				break;
 			case OPT_ERASE_TENANT:
 				eraseTenant = true;
+				break;
+			case OPT_FORCE_COMPLETE:
+				forceComplete = true;
+				break;
+			case OPT_FORCE_ROLLBACK:
+				forceRollback = true;
 				break;
 			}
 		}
@@ -4975,6 +5037,10 @@ int main(int argc, char* argv[]) {
 				f = stopAfter(finishDBMove(sourceDb, Key(prefix.get()), maxLagSec));
 				break;
 			case DBMoveType::ABORT: {
+				if (forceComplete && forceRollback) {
+					fprintf(stderr, "ERROR: --force_complete and --force_rollback can't be specified together\n");
+					return FDB_EXIT_ERROR;
+				}
 				bool canInitCluster = initCluster(true);
 				bool canInitSourceCluster = initSourceCluster(true, true);
 				if (!canInitCluster && !canInitSourceCluster) {
@@ -4998,7 +5064,10 @@ int main(int argc, char* argv[]) {
 				f = stopAfter(abortDBMove(canInitSourceCluster ? sourceDb : Optional<Database>(),
 				                          canInitCluster ? db : Optional<Database>(),
 				                          prefix.map<Key>([](auto s) { return Key(s); }),
-				                          destinationPrefix.map<Key>([](auto s) { return Key(s); })));
+				                          destinationPrefix.map<Key>([](auto s) { return Key(s); }),
+				                          forceComplete   ? AbortState::COMPLETED
+				                          : forceRollback ? AbortState::ROLLED_BACK
+				                                          : AbortState::UNKNOWN));
 				break;
 			}
 			case DBMoveType::CLEAN:
