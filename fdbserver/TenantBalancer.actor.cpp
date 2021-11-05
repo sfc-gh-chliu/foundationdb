@@ -1693,7 +1693,7 @@ ACTOR Future<Void> clearTenant(TenantBalancer* self,
 		KeyRange rangeToErase = prefixRange(targetPrefix);
 		wait(waitOrError(runTenantBalancerTransaction<Void>(self->db,
 		                                                    self->tbi.id(),
-		                                                    "cleanrTenantErase",
+		                                                    "ClearTenantErase",
 		                                                    [rangeToErase](Reference<ReadYourWritesTransaction> tr) {
 			                                                    tr->clear(rangeToErase);
 			                                                    return tr->commit();
@@ -1743,10 +1743,10 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 	    .detail("Prefix", req.prefix);
 
 	try {
-		state Reference<MovementRecord> record = self->getMovementSnapshot(req.movementLocation, req.prefix)->clone();
-		record->abort(); // abort other in-flight movements
+		self->getMovementSnapshot(req.movementLocation, req.prefix)->abort(); // abort other in-flight movements
 		Reference<MovementRecordMap::MutableRecord> mutableRecord =
 		    wait(self->mutateMovement(req.movementLocation, req.prefix)); // wait until other finished
+		state Reference<MovementRecord> record = mutableRecord->record;
 
 		state AbortState abortResult = AbortState::UNKNOWN;
 		if (record->getMovementLocation() == MovementLocation::SOURCE) {
