@@ -435,7 +435,7 @@ struct AbortMovementReply {
 struct AbortMovementRequest {
 	constexpr static FileIdentifier file_identifier = 14058403;
 
-	Optional<UID> movementId;
+	UID movementId;
 	Key prefix;
 	MovementLocation movementLocation;
 	AbortState abortInstruction = AbortState::UNKNOWN;
