@@ -2422,7 +2422,7 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 		int tempIndex = 0;
 		if (src.present()) {
 			if (movementStatuses[tempIndex].get().isError()) {
-				printf("ERROR: The movement on the source cluster has a error: %s\n",
+				printf("ERROR: Could not load the movement details on the source cluster: %s\n",
 				       movementStatuses[tempIndex].get().getError().what());
 				return Void();
 			}
@@ -2430,7 +2430,7 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 		}
 		if (dest.present()) {
 			if (movementStatuses[tempIndex].get().isError()) {
-				printf("ERROR: The movement on the destination cluster has a error: %s\n",
+				printf("ERROR: Could not load the movement details on the destination cluster: %s\n",
 				       movementStatuses[tempIndex].get().getError().what());
 				return Void();
 			}
@@ -2513,8 +2513,13 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 					printf("ERROR: The source movement isn't able to be forced to rollback.\n");
 				}
 			}
+		} else if (e.code() == error_code_movement_not_found) {
+			if (!destinationAbortError) {
+				fprintf(stderr, "ERROR: The data movement record was externally erased during the abort process.");
+			}
+		} else {
+			fprintf(stderr, "ERROR: %s\n", e.what());
 		}
-		fprintf(stderr, "ERROR: %s\n", e.what());
 	}
 
 	return Void();
