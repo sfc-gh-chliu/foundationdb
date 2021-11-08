@@ -2501,16 +2501,16 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 		if (e.code() == error_code_movement_abort_error) {
 			if (destinationAbortError) {
 				if (abortInstruction == AbortState::COMPLETED) {
-					printf("ERROR: The destination movement isn't able to be forced to complete.\n");
+					fprintf(stderr, "ERROR: The destination movement isn't able to be forced to complete.\n");
 				} else if (abortInstruction == AbortState::ROLLED_BACK) {
-					printf("ERROR: The destination movement isn't able to be forced to rollback.\n");
+					fprintf(stderr, "ERROR: The destination movement isn't able to be forced to rollback.\n");
 				}
 			} else {
 				// Error happens in the source abort process
 				if (abortInstruction == AbortState::COMPLETED) {
-					printf("ERROR: The source movement isn't able to be forced to complete.\n");
+					fprintf(stderr, "ERROR: The source movement isn't able to be forced to complete.\n");
 				} else if (abortInstruction == AbortState::ROLLED_BACK) {
-					printf("ERROR: The source movement isn't able to be forced to rollback.\n");
+					fprintf(stderr, "ERROR: The source movement isn't able to be forced to rollback.\n");
 				}
 			}
 		} else if (e.code() == error_code_movement_not_found) {

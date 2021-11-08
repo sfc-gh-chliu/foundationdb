@@ -435,7 +435,7 @@ struct AbortMovementReply {
 struct AbortMovementRequest {
 	constexpr static FileIdentifier file_identifier = 14058403;
 
-	Optional<UID> movementId;
+	UID movementId;
 	Key prefix;
 	MovementLocation movementLocation;
 	AbortState abortInstruction = AbortState::UNKNOWN;
@@ -443,8 +443,6 @@ struct AbortMovementRequest {
 	ReplyPromise<AbortMovementReply> reply;
 
 	AbortMovementRequest() : movementLocation(MovementLocation::SOURCE) {}
-	AbortMovementRequest(Key prefix, MovementLocation movementLocation)
-	  : prefix(prefix), movementLocation(movementLocation) {}
 	AbortMovementRequest(UID movementId, Key prefix, MovementLocation movementLocation)
 	  : movementId(movementId), prefix(prefix), movementLocation(movementLocation) {}
 
