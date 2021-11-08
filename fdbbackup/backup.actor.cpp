@@ -2376,6 +2376,9 @@ ACTOR Future<AbortState> abortDBMove(Database database,
                                      Optional<UID> uid,
                                      AbortState abortInstruction) {
 	state AbortMovementRequest abortMovementRequest(prefix, location);
+	if (uid.present()) {
+		abortMovementRequest.movementId = uid.get();
+	}
 	abortMovementRequest.abortInstruction = abortInstruction;
 	state Future<ErrorOr<AbortMovementReply>> abortMovementReply = Never();
 	state Future<Void> initialize = Void();
