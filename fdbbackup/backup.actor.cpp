@@ -2422,23 +2422,26 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 		int tempIndex = 0;
 		if (src.present()) {
 			if (movementStatuses[tempIndex].get().isError()) {
-				printf("ERROR: Could not load the movement details on the source cluster: %s\n",
-				       movementStatuses[tempIndex].get().getError().what());
+				fprintf(stderr,
+				        "ERROR: Could not load the movement details on the source cluster: %s\n",
+				        movementStatuses[tempIndex].get().getError().what());
 				return Void();
 			}
 			srcMovementStatus = movementStatuses[tempIndex++].get().get();
 		}
 		if (dest.present()) {
 			if (movementStatuses[tempIndex].get().isError()) {
-				printf("ERROR: Could not load the movement details on the destination cluster: %s\n",
-				       movementStatuses[tempIndex].get().getError().what());
+				fprintf(stderr,
+				        "ERROR: Could not load the movement details on the destination cluster: %s\n",
+				        movementStatuses[tempIndex].get().getError().what());
 				return Void();
 			}
 			destMovementStatus = movementStatuses[tempIndex].get().get();
 		}
 		if (src.present() && dest.present() &&
 		    srcMovementStatus.tenantMovementInfo.movementId != destMovementStatus.tenantMovementInfo.movementId) {
-			printf(
+			fprintf(
+			    stderr,
 			    "ERROR: The data movements taking place on the specified prefixes do not match. The movement id of the "
 			    "source cluster is %s. The movement id of the destination cluster is %s. Confirm that you have "
 			    "specified the correct clusters and prefixes for the movement you wish to abort.\n",
