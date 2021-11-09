@@ -1743,9 +1743,10 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 	    .detail("Prefix", req.prefix);
 
 	try {
-		self->getMovementSnapshot(req.movementLocation, req.prefix)->abort(); // abort other in-flight movements
-		Reference<MovementRecordMap::MutableRecord> mutableRecord =
-		    wait(self->mutateMovement(req.movementLocation, req.prefix)); // wait until other finished
+		self->getMovementSnapshot(req.movementLocation, req.prefix, req.movementId)
+		    ->abort(); // abort other in-flight movements
+		Reference<MovementRecordMap::MutableRecord> mutableRecord = wait(self->mutateMovement(
+		    req.movementLocation, req.prefix, req.movementId)); // wait until other operations finished
 		state Reference<MovementRecord> record = mutableRecord->record;
 
 		state AbortState abortResult = AbortState::UNKNOWN;
