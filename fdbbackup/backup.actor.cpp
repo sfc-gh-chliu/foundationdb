@@ -2149,7 +2149,7 @@ ACTOR Future<Void> submitDBMove(Database src, Database dest, Key srcPrefix, Key 
 
 		loop choose {
 			when(ErrorOr<MoveTenantToClusterReply> reply =
-			         wait(timeoutError(replyFuture, CLIENT_KNOBS->REQUEST_TIMEOUT))) {
+			         wait(timeoutError(replyFuture, CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT))) {
 				if (reply.isError()) {
 					throw reply.getError();
 				}
@@ -2181,7 +2181,7 @@ ACTOR Future<TenantMovementStatus> getMovementStatus(Database database, Key pref
 	state Future<Void> initialize = Void();
 	loop choose {
 		when(ErrorOr<GetMovementStatusReply> reply =
-		         wait(timeoutError(getMovementStatusReply, CLIENT_KNOBS->REQUEST_TIMEOUT))) {
+		         wait(timeoutError(getMovementStatusReply, CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT))) {
 			if (reply.isError()) {
 				throw reply.getError();
 			}
@@ -2265,7 +2265,7 @@ ACTOR Future<std::vector<TenantMovementInfo>> getActiveMovements(
 	state Future<Void> initialize = Void();
 	loop choose {
 		when(ErrorOr<GetActiveMovementsReply> reply =
-		         wait(timeoutError(getActiveMovementsReply, CLIENT_KNOBS->REQUEST_TIMEOUT))) {
+		         wait(timeoutError(getActiveMovementsReply, CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT))) {
 			if (reply.isError()) {
 				throw reply.getError();
 			}
@@ -2350,7 +2350,7 @@ ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> ma
 		state Future<Void> initialize = Void();
 		loop choose {
 			when(ErrorOr<FinishSourceMovementReply> reply =
-			         wait(timeoutError(finishSourceMovementReply, CLIENT_KNOBS->REQUEST_TIMEOUT))) {
+			         wait(timeoutError(finishSourceMovementReply, CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT))) {
 				if (reply.isError()) {
 					throw reply.getError();
 				}
@@ -2386,7 +2386,7 @@ ACTOR Future<AbortState> abortDBMove(Database database,
 	state Future<Void> initialize = Void();
 	loop choose {
 		when(ErrorOr<AbortMovementReply> reply =
-		         wait(timeoutError(abortMovementReply, CLIENT_KNOBS->REQUEST_TIMEOUT))) {
+		         wait(timeoutError(abortMovementReply, CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT))) {
 			if (reply.isError()) {
 				throw reply.getError();
 			}
@@ -2541,7 +2541,7 @@ ACTOR Future<Void> cleanupDBMove(Database src, Key srcPrefix, CleanupMovementSou
 		state Future<Void> initialize = Void();
 		loop choose {
 			when(ErrorOr<CleanupMovementSourceReply> reply =
-			         wait(timeoutError(cleanupMovementSourceReply, CLIENT_KNOBS->REQUEST_TIMEOUT))) {
+			         wait(timeoutError(cleanupMovementSourceReply, CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT))) {
 				if (reply.isError()) {
 					throw reply.getError();
 				}
