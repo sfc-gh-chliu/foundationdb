@@ -257,6 +257,9 @@ void ClientKnobs::initialize(Randomize randomize) {
 	// blob granules 
 	init( ENABLE_BLOB_GRANULES,                   false );
 
+	// tenant balancer
+	init( REQUEST_TIMEOUT,						   20.0 ); // default timeout value
+
 	// clang-format on
 }
 

@@ -248,6 +248,9 @@ public:
 	// blob granules
 	bool ENABLE_BLOB_GRANULES;
 
+	// tenant balancer
+	double REQUEST_TIMEOUT; // rpc request timeout value for tenant balancer clients
+
 	ClientKnobs(Randomize randomize);
 	void initialize(Randomize randomize);
 };

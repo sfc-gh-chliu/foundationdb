@@ -20,6 +20,7 @@
 
 #include "fdbbackup/BackupTLSConfig.h"
 #include "fdbclient/JsonBuilder.h"
+#include "fdbclient/Knobs.h"
 #include "flow/Arena.h"
 #include "flow/Error.h"
 #include "flow/Trace.h"
@@ -2140,8 +2141,6 @@ ACTOR Future<Void> runAgent(Database db) {
 
 ACTOR Future<Void> submitDBMove(Database src, Database dest, Key srcPrefix, Key destPrefix) {
 	try {
-		// TODO Remove the timeout hard code
-		double requestTimeout = 3;
 		state MoveTenantToClusterRequest srcRequest(
 		    srcPrefix, destPrefix, dest->getConnectionRecord()->getConnectionString().toString());
 
@@ -2149,7 +2148,8 @@ ACTOR Future<Void> submitDBMove(Database src, Database dest, Key srcPrefix, Key 
 		state Future<Void> initialize = Void();
 
 		loop choose {
-			when(ErrorOr<MoveTenantToClusterReply> reply = wait(timeoutError(replyFuture, requestTimeout))) {
+			when(ErrorOr<MoveTenantToClusterReply> reply =
+			         wait(timeoutError(replyFuture, CLIENT_KNOBS->REQUEST_TIMEOUT))) {
 				if (reply.isError()) {
 					throw reply.getError();
 				}
@@ -2176,13 +2176,12 @@ ACTOR Future<Void> submitDBMove(Database src, Database dest, Key srcPrefix, Key 
 }
 
 ACTOR Future<TenantMovementStatus> getMovementStatus(Database database, Key prefix, MovementLocation movementLocation) {
-	// TODO Remove the timeout hard code
-	double requestTimeout = 3;
 	state GetMovementStatusRequest getMovementStatusRequest(prefix, movementLocation);
 	state Future<ErrorOr<GetMovementStatusReply>> getMovementStatusReply = Never();
 	state Future<Void> initialize = Void();
 	loop choose {
-		when(ErrorOr<GetMovementStatusReply> reply = wait(timeoutError(getMovementStatusReply, requestTimeout))) {
+		when(ErrorOr<GetMovementStatusReply> reply =
+		         wait(timeoutError(getMovementStatusReply, CLIENT_KNOBS->REQUEST_TIMEOUT))) {
 			if (reply.isError()) {
 				throw reply.getError();
 			}
@@ -2260,14 +2259,13 @@ ACTOR Future<std::vector<TenantMovementInfo>> getActiveMovements(
     Database database,
     Optional<std::string> peerDatabaseConnectionStringFilter,
     Optional<MovementLocation> locationFilter) {
-	// TODO Remove the timeout hard code
-	double requestTimeout = 3;
 	state GetActiveMovementsRequest getActiveMovementsRequest(
 	    Optional<Key>(), peerDatabaseConnectionStringFilter, locationFilter);
 	state Future<ErrorOr<GetActiveMovementsReply>> getActiveMovementsReply = Never();
 	state Future<Void> initialize = Void();
 	loop choose {
-		when(ErrorOr<GetActiveMovementsReply> reply = wait(timeoutError(getActiveMovementsReply, requestTimeout))) {
+		when(ErrorOr<GetActiveMovementsReply> reply =
+		         wait(timeoutError(getActiveMovementsReply, CLIENT_KNOBS->REQUEST_TIMEOUT))) {
 			if (reply.isError()) {
 				throw reply.getError();
 			}
@@ -2346,15 +2344,13 @@ ACTOR Future<Void> listDBMove(Database src, Database dest) {
 
 ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> maxLagSeconds) {
 	try {
-		// TODO Remove the timeout hard code
-		double requestTimeout = 3;
 		// Send request to source cluster
 		state FinishSourceMovementRequest finishSourceMovementRequest(srcPrefix, maxLagSeconds.orDefault(DBL_MAX));
 		state Future<ErrorOr<FinishSourceMovementReply>> finishSourceMovementReply = Never();
 		state Future<Void> initialize = Void();
 		loop choose {
 			when(ErrorOr<FinishSourceMovementReply> reply =
-			         wait(timeoutError(finishSourceMovementReply, requestTimeout))) {
+			         wait(timeoutError(finishSourceMovementReply, CLIENT_KNOBS->REQUEST_TIMEOUT))) {
 				if (reply.isError()) {
 					throw reply.getError();
 				}
@@ -2384,14 +2380,13 @@ ACTOR Future<AbortState> abortDBMove(Database database,
                                      MovementLocation location,
                                      UID uid,
                                      AbortState abortInstruction) {
-	// TODO Remove the timeout hard code
-	double requestTimeout = 3;
 	state AbortMovementRequest abortMovementRequest(uid, prefix, location);
 	abortMovementRequest.abortInstruction = abortInstruction;
 	state Future<ErrorOr<AbortMovementReply>> abortMovementReply = Never();
 	state Future<Void> initialize = Void();
 	loop choose {
-		when(ErrorOr<AbortMovementReply> reply = wait(timeoutError(abortMovementReply, requestTimeout))) {
+		when(ErrorOr<AbortMovementReply> reply =
+		         wait(timeoutError(abortMovementReply, CLIENT_KNOBS->REQUEST_TIMEOUT))) {
 			if (reply.isError()) {
 				throw reply.getError();
 			}
@@ -2541,14 +2536,12 @@ ACTOR Future<Void> abortDBMove(Optional<Database> src,
 
 ACTOR Future<Void> cleanupDBMove(Database src, Key srcPrefix, CleanupMovementSourceRequest::CleanupType cleanupType) {
 	try {
-		// TODO Remove the timeout hard code
-		double requestTimeout = 3;
 		state CleanupMovementSourceRequest cleanupMovementSourceRequest(srcPrefix, cleanupType);
 		state Future<ErrorOr<CleanupMovementSourceReply>> cleanupMovementSourceReply = Never();
 		state Future<Void> initialize = Void();
 		loop choose {
 			when(ErrorOr<CleanupMovementSourceReply> reply =
-			         wait(timeoutError(cleanupMovementSourceReply, requestTimeout))) {
+			         wait(timeoutError(cleanupMovementSourceReply, CLIENT_KNOBS->REQUEST_TIMEOUT))) {
 				if (reply.isError()) {
 					throw reply.getError();
 				}
