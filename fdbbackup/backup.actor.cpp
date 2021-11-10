@@ -20,6 +20,7 @@
 
 #include "fdbbackup/BackupTLSConfig.h"
 #include "fdbclient/JsonBuilder.h"
+#include "fdbclient/Knobs.h"
 #include "flow/Arena.h"
 #include "flow/Error.h"
 #include "flow/Trace.h"
@@ -2147,7 +2148,8 @@ ACTOR Future<Void> submitDBMove(Database src, Database dest, Key srcPrefix, Key 
 		state Future<Void> initialize = Void();
 
 		loop choose {
-			when(ErrorOr<MoveTenantToClusterReply> reply = wait(replyFuture)) {
+			when(ErrorOr<MoveTenantToClusterReply> reply =
+			         wait(timeoutError(replyFuture, CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT))) {
 				if (reply.isError()) {
 					throw reply.getError();
 				}
@@ -2178,7 +2180,8 @@ ACTOR Future<TenantMovementStatus> getMovementStatus(Database database, Key pref
 	state Future<ErrorOr<GetMovementStatusReply>> getMovementStatusReply = Never();
 	state Future<Void> initialize = Void();
 	loop choose {
-		when(ErrorOr<GetMovementStatusReply> reply = wait(getMovementStatusReply)) {
+		when(ErrorOr<GetMovementStatusReply> reply =
+		         wait(timeoutError(getMovementStatusReply, CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT))) {
 			if (reply.isError()) {
 				throw reply.getError();
 			}
@@ -2261,7 +2264,8 @@ ACTOR Future<std::vector<TenantMovementInfo>> getActiveMovements(
 	state Future<ErrorOr<GetActiveMovementsReply>> getActiveMovementsReply = Never();
 	state Future<Void> initialize = Void();
 	loop choose {
-		when(ErrorOr<GetActiveMovementsReply> reply = wait(getActiveMovementsReply)) {
+		when(ErrorOr<GetActiveMovementsReply> reply =
+		         wait(timeoutError(getActiveMovementsReply, CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT))) {
 			if (reply.isError()) {
 				throw reply.getError();
 			}
@@ -2345,7 +2349,8 @@ ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> ma
 		state Future<ErrorOr<FinishSourceMovementReply>> finishSourceMovementReply = Never();
 		state Future<Void> initialize = Void();
 		loop choose {
-			when(ErrorOr<FinishSourceMovementReply> reply = wait(finishSourceMovementReply)) {
+			when(ErrorOr<FinishSourceMovementReply> reply =
+			         wait(timeoutError(finishSourceMovementReply, CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT))) {
 				if (reply.isError()) {
 					throw reply.getError();
 				}
@@ -2380,7 +2385,8 @@ ACTOR Future<AbortState> abortDBMove(Database database,
 	state Future<ErrorOr<AbortMovementReply>> abortMovementReply = Never();
 	state Future<Void> initialize = Void();
 	loop choose {
-		when(ErrorOr<AbortMovementReply> reply = wait(abortMovementReply)) {
+		when(ErrorOr<AbortMovementReply> reply =
+		         wait(timeoutError(abortMovementReply, CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT))) {
 			if (reply.isError()) {
 				throw reply.getError();
 			}
@@ -2534,7 +2540,8 @@ ACTOR Future<Void> cleanupDBMove(Database src, Key srcPrefix, CleanupMovementSou
 		state Future<ErrorOr<CleanupMovementSourceReply>> cleanupMovementSourceReply = Never();
 		state Future<Void> initialize = Void();
 		loop choose {
-			when(ErrorOr<CleanupMovementSourceReply> reply = wait(cleanupMovementSourceReply)) {
+			when(ErrorOr<CleanupMovementSourceReply> reply =
+			         wait(timeoutError(cleanupMovementSourceReply, CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT))) {
 				if (reply.isError()) {
 					throw reply.getError();
 				}
@@ -3959,7 +3966,6 @@ int main(int argc, char* argv[]) {
 			}
 			dbMoveType = getDBMoveType(argv[1]);
 			switch (dbMoveType) {
-			// TODO support more operations here
 			case DBMoveType::START:
 				args = std::make_unique<CSimpleOpt>(argc - 1, &argv[1], g_rgDBMoveStartOptions, SO_O_EXACT);
 				break;
