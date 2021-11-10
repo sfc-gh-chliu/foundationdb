@@ -1290,17 +1290,31 @@ ACTOR Future<Void> getActiveMovements(TenantBalancer* self, GetActiveMovementsRe
 		state std::vector<Reference<const MovementRecord>> filteredMovements =
 		    getFilteredMovements(self, req.prefixFilter, req.peerDatabaseConnectionStringFilter, req.locationFilter);
 
-		state std::vector<Future<EBackupState>> backupStateFutures;
+		state std::vector<Future<Optional<EBackupState>>> backupStateFutures;
 		for (auto record : filteredMovements) {
-			backupStateFutures.push_back(getDrState(self, record));
+			backupStateFutures.push_back(
+			    timeout(getDrState(self, record), SERVER_KNOBS->TENANT_BALANCER_MOVEMENT_RECOVERY_TIMEOUT));
 		}
 
 		wait(waitForAll(backupStateFutures));
 
 		GetActiveMovementsReply reply;
 		for (int i = 0; i < filteredMovements.size(); ++i) {
-			Optional<std::pair<MovementState, std::string>> newMovementState =
-			    drStateToMovementState(filteredMovements[i]->movementState, backupStateFutures[i].get());
+			Optional<std::pair<MovementState, std::string>> newMovementState;
+			if (newMovementState.present()) {
+				newMovementState =
+				    drStateToMovementState(filteredMovements[i]->movementState, backupStateFutures[i].get().get());
+			} else {
+				// A timeout happens during acquiring the current DR state
+				TraceEvent(SevWarn, "TenantBalancerOperationTimeout", self->tbi.id())
+				    .detail("OperationName", "getActiveMovements")
+				    .detail("MovementId", filteredMovements[i]->getMovementId())
+				    .detail("SourcePrefix", filteredMovements[i]->getSourcePrefix())
+				    .detail("DestinationPrefix", filteredMovements[i]->getDestinationPrefix())
+				    .detail(
+				        "MovementLocation",
+				        TenantBalancerInterface::movementLocationToString(filteredMovements[i]->getMovementLocation()));
+			}
 
 			reply.activeMovements.emplace_back(
 			    filteredMovements[i]->getMovementId(),
@@ -1454,6 +1468,7 @@ ACTOR Future<Void> getMovementStatus(TenantBalancer* self, GetMovementStatusRequ
 		if (e.code() == error_code_timed_out) {
 			// If a timeout happens, we return all the data we collected so far
 			TraceEvent(SevWarn, "TenantBalancerOperationTimeout", self->tbi.id())
+			    .detail("OperationName", "getMovementStatus")
 			    .detail("Prefix", req.prefix)
 			    .detail("MovementLocation", TenantBalancerInterface::movementLocationToString(req.movementLocation));
 			GetMovementStatusReply reply(status);
