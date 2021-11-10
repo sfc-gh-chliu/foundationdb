@@ -249,11 +249,7 @@ public:
 	bool ENABLE_BLOB_GRANULES;
 
 	// tenant balancer
-<<<<<<< HEAD
 	double TENANT_BALANCER_REQUEST_TIMEOUT; // rpc request timeout value for tenant balancer clients
-=======
-	double REQUEST_TIMEOUT; // rpc request timeout value for tenant balancer clients
->>>>>>> b0249bcd6 (Add the request timeout in client to clientKnobs)
 
 	ClientKnobs(Randomize randomize);
 	void initialize(Randomize randomize);

@@ -258,11 +258,7 @@ void ClientKnobs::initialize(Randomize randomize) {
 	init( ENABLE_BLOB_GRANULES,                   false );
 
 	// tenant balancer
-<<<<<<< HEAD
 	init( TENANT_BALANCER_REQUEST_TIMEOUT,         20.0 ); // default timeout value
-=======
-	init( REQUEST_TIMEOUT,						   20.0 ); // default timeout value
->>>>>>> b0249bcd6 (Add the request timeout in client to clientKnobs)
 
 	// clang-format on
 }
