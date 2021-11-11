@@ -774,6 +774,7 @@ void ServerKnobs::initialize(Randomize randomize, ClientKnobs* clientKnobs, IsSi
 
 	// Tenant balancer
 	init( TENANT_BALANCER_MOVEMENT_RECOVERY_TIMEOUT,            30.0 );
+	init( TENANT_BALANCER_OPERATION_TIMEOUT,                     5.0 );
 
 	// Blob granlues
 	init( BG_URL,                                                 "" ); // TODO: store in system key space, eventually

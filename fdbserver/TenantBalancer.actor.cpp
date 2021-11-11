@@ -1292,8 +1292,8 @@ ACTOR Future<Void> getActiveMovements(TenantBalancer* self, GetActiveMovementsRe
 
 		state std::vector<Future<ErrorOr<EBackupState>>> backupStateFutures;
 		for (auto record : filteredMovements) {
-			backupStateFutures.push_back(errorOr(
-			    timeoutError(getDrState(self, record), SERVER_KNOBS->TENANT_BALANCER_MOVEMENT_RECOVERY_TIMEOUT)));
+			backupStateFutures.push_back(
+			    errorOr(timeoutError(getDrState(self, record), SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT)));
 		}
 
 		wait(waitForAll(backupStateFutures));
@@ -1451,10 +1451,10 @@ ACTOR Future<Void> getMovementStatus(TenantBalancer* self, GetMovementStatusRequ
 		}
 
 		wait(timeoutError(getStatusAndUpdateMovementRecord(self, record, &status),
-		                  SERVER_KNOBS->TENANT_BALANCER_MOVEMENT_RECOVERY_TIMEOUT));
+		                  SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT));
 		if (mutableRecord.present()) {
 			wait(timeoutError(self->saveMovementRecord(mutableRecord.get()),
-			                  SERVER_KNOBS->TENANT_BALANCER_MOVEMENT_RECOVERY_TIMEOUT));
+			                  SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT));
 		}
 
 		TraceEvent(SevDebug, "TenantBalancerGetMovementStatusComplete", self->tbi.id())
@@ -1733,7 +1733,7 @@ ACTOR Future<Void> clearTenant(TenantBalancer* self,
 		                                                   }),
 		                record->onAbort());
 		ErrorOr<Void> eraseResult =
-		    wait(errorOr(timeoutError(clearTenantOrAbort, SERVER_KNOBS->TENANT_BALANCER_MOVEMENT_RECOVERY_TIMEOUT)));
+		    wait(errorOr(timeoutError(clearTenantOrAbort, SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT)));
 		if (eraseResult.isError()) {
 			if (eraseResult.getError().code() == error_code_timed_out) {
 				TraceEvent(SevWarn, "TenantBalancerOperationTimeout", self->tbi.id())
@@ -1755,8 +1755,8 @@ ACTOR Future<Void> clearTenant(TenantBalancer* self,
 
 		Future<Void> clearMovementRecordOrAbort =
 		    waitOrError(self->clearMovementRecord(mutableRecord), record->onAbort());
-		ErrorOr<Void> unlockResult = wait(
-		    errorOr(timeoutError(clearMovementRecordOrAbort, SERVER_KNOBS->TENANT_BALANCER_MOVEMENT_RECOVERY_TIMEOUT)));
+		ErrorOr<Void> unlockResult =
+		    wait(errorOr(timeoutError(clearMovementRecordOrAbort, SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT)));
 		if (unlockResult.isError()) {
 			if (unlockResult.getError().code() == error_code_timed_out) {
 				TraceEvent(SevWarn, "TenantBalancerOperationTimeout", self->tbi.id())
@@ -1784,8 +1784,7 @@ ACTOR Future<Void> rollbackMovement(TenantBalancer* self,
 	    .detail("MovementStatus", TenantBalancerInterface::movementStateToString(record->movementState))
 	    .detail("SourcePrefix", record->getSourcePrefix())
 	    .detail("DestinationPreifx", record->getDestinationPrefix());
-	ErrorOr<Void> result =
-	    wait(timeoutError(abortDr(self, record), SERVER_KNOBS->TENANT_BALANCER_MOVEMENT_RECOVERY_TIMEOUT));
+	ErrorOr<Void> result = wait(timeoutError(abortDr(self, record), SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT));
 	if (result.isError() && result.getError().code() != error_code_backup_unneeded) {
 		if (result.getError().code() == error_code_timed_out) {
 			TraceEvent(SevWarn, "TenantBalancerOperationTimeout", self->tbi.id())
@@ -1841,8 +1840,8 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 					abortResult = AbortState::ROLLED_BACK;
 				} else {
 					// There isn't any previous destination abort
-					ErrorOr<Void> result = wait(
-					    timeoutError(abortDr(self, record), SERVER_KNOBS->TENANT_BALANCER_MOVEMENT_RECOVERY_TIMEOUT));
+					ErrorOr<Void> result =
+					    wait(timeoutError(abortDr(self, record), SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT));
 					if (result.isError() && result.getError().code() != error_code_backup_unneeded) {
 						if (result.getError().code() == error_code_timed_out) {
 							TraceEvent(SevWarn, "TenantBalancerOperationTimeout", self->tbi.id())
