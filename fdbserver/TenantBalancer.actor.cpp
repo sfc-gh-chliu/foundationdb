@@ -1522,6 +1522,28 @@ ACTOR Future<Void> sendFinishRequestToDestination(TenantBalancer* self,
 	return Void();
 }
 
+ACTOR Future<bool> isPeerAlive(TenantBalancer* self, Reference<MovementRecord> record) {
+	try {
+		GetMovementStatusReply peerStatusReply = wait(timeoutError(
+		    sendTenantBalancerRequest(record->getPeerDatabase(),
+		                              GetMovementStatusRequest(record->getRemotePrefix(),
+		                                                       record->getMovementLocation() == MovementLocation::SOURCE
+		                                                           ? MovementLocation::DEST
+		                                                           : MovementLocation::SOURCE),
+		                              &TenantBalancerInterface::getMovementStatus),
+		    SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT));
+		return !peerStatusReply.error.present();
+	} catch (Error& e) {
+		if (e.code() == error_code_timed_out) {
+			TraceEvent(SevWarn, "TenantBalancerOperationTimeout", self->tbi.id())
+			    .detail("OperationName", "isPeerAlive")
+			    .detail("TimeoutFunction", "sendTenantBalancerRequest")
+			    .detail("Prefix", record->getRemotePrefix());
+		}
+		throw e;
+	}
+}
+
 ACTOR Future<Void> finishSourceMovement(TenantBalancer* self, FinishSourceMovementRequest req) {
 	++self->finishSourceMovementRequests;
 
@@ -1532,9 +1554,27 @@ ACTOR Future<Void> finishSourceMovement(TenantBalancer* self, FinishSourceMoveme
 	    .detail("MaxLagSeconds", req.maxLagSeconds);
 
 	try {
-		state Reference<MovementRecordMap::MutableRecord> mutableRecord =
-		    wait(self->mutateOutgoingMovement(req.sourcePrefix));
+		state ErrorOr<Reference<MovementRecordMap::MutableRecord>> mutableRecordResult = wait(errorOr(timeoutError(
+		    self->mutateOutgoingMovement(req.sourcePrefix), SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT)));
+		if (mutableRecordResult.isError()) {
+			if (mutableRecordResult.getError().code() == error_code_timed_out) {
+				TraceEvent(SevWarn, "TenantBalancerOperationTimeout", self->tbi.id())
+				    .detail("OperationName", "finishSourceMovement")
+				    .detail("TimeoutFunction", "mutateOutgoingMovement")
+				    .detail("Prefix", req.sourcePrefix);
+			}
+			throw mutableRecordResult.getError();
+		}
+		state Reference<MovementRecordMap::MutableRecord> mutableRecord = mutableRecordResult.get();
 		state Reference<MovementRecord> record = mutableRecord->record;
+
+		bool isDestinationAlive = wait(isPeerAlive(self, record));
+		if (!isDestinationAlive) {
+			TraceEvent(SevWarn, "TenantBalancerDestinationDead", self->tbi.id())
+			    .detail("DestinationPrefix", record->getDestinationPrefix())
+			    .detail("DestinationDatabaseName", record->getPeerDatabaseName());
+			throw movement_error();
+		}
 
 		state TenantMovementStatus movementStatus;
 		wait(waitOrError(getStatusAndUpdateMovementRecord(self, record, &movementStatus), record->onAbort()));
@@ -1596,10 +1636,12 @@ ACTOR Future<Void> finishSourceMovement(TenantBalancer* self, FinishSourceMoveme
 		FinishSourceMovementReply reply(lockedTenant, version);
 		req.reply.send(reply);
 	} catch (Error& e) {
-		TraceEvent(SevDebug, "TenantBalancerFinishSourceMovementError", self->tbi.id())
-		    .error(e)
-		    .detail("SourcePrefix", req.sourcePrefix)
-		    .detail("MaxLagSeconds", req.maxLagSeconds);
+		if (e.code() != error_code_timed_out) {
+			TraceEvent(SevDebug, "TenantBalancerFinishSourceMovementError", self->tbi.id())
+			    .error(e)
+			    .detail("SourcePrefix", req.sourcePrefix)
+			    .detail("MaxLagSeconds", req.maxLagSeconds);
+		}
 		req.reply.sendError(e);
 	}
 
@@ -1615,8 +1657,20 @@ ACTOR Future<Void> finishDestinationMovement(TenantBalancer* self, FinishDestina
 	    .detail("SwitchVersion", req.version);
 
 	try {
-		state Reference<MovementRecordMap::MutableRecord> mutableRecord =
-		    wait(self->mutateIncomingMovement(Key(req.destinationPrefix), req.movementId));
+		state ErrorOr<Reference<MovementRecordMap::MutableRecord>> mutableRecordResult =
+		    wait(errorOr(timeoutError(self->mutateIncomingMovement(Key(req.destinationPrefix), req.movementId),
+		                              SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT)));
+		if (mutableRecordResult.isError()) {
+			if (mutableRecordResult.getError().code() == error_code_timed_out) {
+				TraceEvent(SevWarn, "TenantBalancerOperationTimeout", self->tbi.id())
+				    .detail("OperationName", "finishSourceMovement")
+				    .detail("TimeoutFunction", "mutateOutgoingMovement")
+				    .detail("Prefix", req.destinationPrefix)
+				    .detail("MovementId", req.movementId);
+			}
+			throw mutableRecordResult.getError();
+		}
+		state Reference<MovementRecordMap::MutableRecord> mutableRecord = mutableRecordResult.get();
 		state Reference<MovementRecord> record = mutableRecord->record;
 
 		if (record->movementState == MovementState::STARTED) {
@@ -1741,7 +1795,7 @@ ACTOR Future<Void> clearTenant(TenantBalancer* self,
 			                                                   }),
 			                record->onAbort());
 			wait(timeoutError(clearTenantOrAbort, SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT));
-			TraceEvent("TenantBalancerPrefixErased", self->tbi.id())
+			TraceEvent(SevDebug, "TenantBalancerPrefixErased", self->tbi.id())
 			    .detail("MovementId", record->getMovementId())
 			    .detail("Prefix", targetPrefix);
 		}
@@ -1824,7 +1878,7 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 			}
 			throw mutableRecordResult.getError();
 		}
-		Reference<MovementRecordMap::MutableRecord> mutableRecord = mutableRecordResult.get();
+		state Reference<MovementRecordMap::MutableRecord> mutableRecord = mutableRecordResult.get();
 		state Reference<MovementRecord> record = mutableRecord->record;
 
 		state AbortState abortResult = AbortState::UNKNOWN;
@@ -1942,7 +1996,7 @@ ACTOR Future<Void> cleanupMovementSource(TenantBalancer* self, CleanupMovementSo
 			}
 			throw mutableRecordResult.getError();
 		}
-		Reference<MovementRecordMap::MutableRecord> mutableRecord = mutableRecordResult.get();
+		state Reference<MovementRecordMap::MutableRecord> mutableRecord = mutableRecordResult.get();
 		state Reference<MovementRecord> record = mutableRecord->record;
 
 		if (record->movementState != MovementState::COMPLETED) {
