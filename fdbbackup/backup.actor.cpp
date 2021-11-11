@@ -2185,6 +2185,10 @@ ACTOR Future<TenantMovementStatus> getMovementStatus(Database database, Key pref
 			if (reply.isError()) {
 				throw reply.getError();
 			}
+			if (reply.get().error.present()) {
+				printf("Error occurs during acquiring movement status in the server side: %s\n",
+				       reply.get().error.get().what());
+			}
 			return reply.get().movementStatus;
 		}
 		when(wait(database->onTenantBalancerChanged() || initialize)) {
@@ -2268,6 +2272,10 @@ ACTOR Future<std::vector<TenantMovementInfo>> getActiveMovements(
 		         wait(timeoutError(getActiveMovementsReply, CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT))) {
 			if (reply.isError()) {
 				throw reply.getError();
+			}
+			if (reply.get().error.present()) {
+				printf("Error occurs during acquiring active movements in the server side: %s\n",
+				       reply.get().error.get().what());
 			}
 			return reply.get().activeMovements;
 		}

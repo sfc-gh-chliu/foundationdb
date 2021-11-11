@@ -258,13 +258,14 @@ struct GetActiveMovementsReply {
 	constexpr static FileIdentifier file_identifier = 2320458;
 
 	std::vector<TenantMovementInfo> activeMovements;
+	Optional<Error> error;
 
 	GetActiveMovementsReply() {}
 	GetActiveMovementsReply(std::vector<TenantMovementInfo> activeMovements) : activeMovements(activeMovements) {}
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, activeMovements);
+		serializer(ar, activeMovements, error);
 	}
 };
 
@@ -295,13 +296,14 @@ struct GetMovementStatusReply {
 	constexpr static FileIdentifier file_identifier = 4693499;
 
 	TenantMovementStatus movementStatus;
+	Optional<Error> error;
 
 	GetMovementStatusReply() {}
 	GetMovementStatusReply(TenantMovementStatus movementStatus) : movementStatus(movementStatus) {}
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, movementStatus);
+		serializer(ar, movementStatus, error);
 	}
 };
 
