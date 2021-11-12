@@ -347,12 +347,12 @@ struct FinishSourceMovementRequest {
 	constexpr static FileIdentifier file_identifier = 10934711;
 
 	Key sourcePrefix;
-	double maxLagSeconds;
+	Optional<double> maxLagSeconds;
 
 	ReplyPromise<FinishSourceMovementReply> reply;
 
 	FinishSourceMovementRequest() {}
-	FinishSourceMovementRequest(Key sourcePrefix, double maxLagSeconds)
+	FinishSourceMovementRequest(Key sourcePrefix, Optional<double> maxLagSeconds)
 	  : sourcePrefix(sourcePrefix), maxLagSeconds(maxLagSeconds) {}
 
 	template <class Ar>
@@ -380,16 +380,22 @@ struct FinishDestinationMovementRequest {
 	UID movementId;
 	Key destinationPrefix;
 	Version version;
+	Optional<double> maxLagSeconds;
 
 	ReplyPromise<FinishDestinationMovementReply> reply;
 
 	FinishDestinationMovementRequest() : version(invalidVersion) {}
 	FinishDestinationMovementRequest(UID movementId, Key destinationPrefix, Version version)
 	  : movementId(movementId), destinationPrefix(destinationPrefix), version(version) {}
+	FinishDestinationMovementRequest(UID movementId,
+	                                 Key destinationPrefix,
+	                                 Version version,
+	                                 Optional<double> maxLagSeconds)
+	  : movementId(movementId), destinationPrefix(destinationPrefix), version(version), maxLagSeconds(maxLagSeconds) {}
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, movementId, destinationPrefix, version, reply);
+		serializer(ar, movementId, destinationPrefix, version, maxLagSeconds, reply);
 	}
 };
 

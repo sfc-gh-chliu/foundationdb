@@ -2353,12 +2353,28 @@ ACTOR Future<Void> listDBMove(Database src, Database dest) {
 ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> maxLagSeconds) {
 	try {
 		// Send request to source cluster
-		state FinishSourceMovementRequest finishSourceMovementRequest(srcPrefix, maxLagSeconds.orDefault(DBL_MAX));
+		state FinishSourceMovementRequest finishSourceMovementRequest(srcPrefix, maxLagSeconds);
 		state Future<ErrorOr<FinishSourceMovementReply>> finishSourceMovementReply = Never();
 		state Future<Void> initialize = Void();
+		state double timeoutLimit;
+		if (maxLagSeconds.present()) {
+			timeoutLimit = maxLagSeconds.get();
+		} else {
+			state TenantMovementStatus status = wait(getMovementStatus(src, srcPrefix, MovementLocation::SOURCE));
+			if (!status.mutationLag.present()) {
+				fprintf(stderr,
+				        "Mutation lag for prefix: %s on database: %s is unavailable\n",
+				        srcPrefix.toString().c_str(),
+				        src->getConnectionRecord()->getConnectionString().toString().c_str());
+				return Void();
+			}
+			timeoutLimit = status.mutationLag.get();
+		}
+		printf("Expected finish time duration is: %d\n", timeoutLimit);
+
 		loop choose {
 			when(ErrorOr<FinishSourceMovementReply> reply =
-			         wait(timeoutError(finishSourceMovementReply, CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT))) {
+			         wait(timeoutError(finishSourceMovementReply, timeoutLimit))) {
 				if (reply.isError()) {
 					throw reply.getError();
 				}
