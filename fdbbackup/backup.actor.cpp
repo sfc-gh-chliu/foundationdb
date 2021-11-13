@@ -2259,7 +2259,7 @@ ACTOR Future<Void> statusDBMove(Database db, Key prefix, MovementLocation moveme
 	return Void();
 }
 
-ACTOR Future<std::vector<TenantMovementInfo>> getActiveMovements(
+ACTOR Future<std::vector<std::pair<TenantMovementInfo, Optional<Error>>>> getActiveMovements(
     Database database,
     Optional<std::string> peerDatabaseConnectionStringFilter,
     Optional<MovementLocation> locationFilter) {
@@ -2273,10 +2273,7 @@ ACTOR Future<std::vector<TenantMovementInfo>> getActiveMovements(
 			if (reply.isError()) {
 				throw reply.getError();
 			}
-			if (reply.get().error.present()) {
-				printf("Error occurs during acquiring active movements in the server side: %s\n",
-				       reply.get().error.get().what());
-			}
+
 			return reply.get().activeMovements;
 		}
 		when(wait(database->onTenantBalancerChanged() || initialize)) {
@@ -2294,7 +2291,7 @@ ACTOR Future<Void> fetchAndDisplayDBMove(Database db,
                                          MovementLocation locationFilter) {
 	try {
 		// Get active movement list
-		state std::vector<TenantMovementInfo> activeMovements =
+		state std::vector<std::pair<TenantMovementInfo, Optional<Error>>> activeMovements =
 		    wait(getActiveMovements(db, peerDatabaseConnectionStringFilter, locationFilter));
 
 		if (activeMovements.empty()) {
@@ -2306,26 +2303,31 @@ ACTOR Future<Void> fetchAndDisplayDBMove(Database db,
 				printf("There are %d active movements:\n\n", activeMovements.size());
 			}
 			for (int i = 0; i < activeMovements.size(); ++i) {
-				printf("%d. %s\n", i + 1, activeMovements[i].movementId.toString().c_str());
+				if (activeMovements[i].second.present()) {
+					printf("Error happened while acquiring the movement information in the server side: %s\n",
+					       activeMovements[i].second.get().what());
+				}
+				const auto& movementInfo = activeMovements[i].first;
+				printf("%d. %s\n", i + 1, movementInfo.movementId.toString().c_str());
 				if (locationFilter == MovementLocation::SOURCE) {
-					printf("  Prefix: %s\n", printable(activeMovements[i].sourcePrefix).c_str());
+					printf("  Prefix: %s\n", printable(movementInfo.sourcePrefix).c_str());
 					if (!peerDatabaseConnectionStringFilter.present()) {
-						printf("  Destination cluster: %s\n", activeMovements[i].peerConnectionString.c_str());
+						printf("  Destination cluster: %s\n", movementInfo.peerConnectionString.c_str());
 					}
-					if (activeMovements[i].destinationPrefix != activeMovements[i].sourcePrefix) {
-						printf("  Replacement prefix: %s\n", printable(activeMovements[i].destinationPrefix).c_str());
+					if (movementInfo.destinationPrefix != movementInfo.sourcePrefix) {
+						printf("  Replacement prefix: %s\n", printable(movementInfo.destinationPrefix).c_str());
 					}
 				} else {
-					printf("  Prefix: %s\n", printable(activeMovements[i].destinationPrefix).c_str());
+					printf("  Prefix: %s\n", printable(movementInfo.destinationPrefix).c_str());
 					if (!peerDatabaseConnectionStringFilter.present()) {
-						printf("  Source cluster: %s\n", activeMovements[i].peerConnectionString.c_str());
+						printf("  Source cluster: %s\n", movementInfo.peerConnectionString.c_str());
 					}
-					if (activeMovements[i].destinationPrefix != activeMovements[i].sourcePrefix) {
-						printf("  Original prefix: %s\n", printable(activeMovements[i].sourcePrefix).c_str());
+					if (movementInfo.destinationPrefix != movementInfo.sourcePrefix) {
+						printf("  Original prefix: %s\n", printable(movementInfo.sourcePrefix).c_str());
 					}
 				}
 				printf("  Movement state: %s\n\n",
-				       TenantBalancerInterface::movementStateToString(activeMovements[i].movementState).c_str());
+				       TenantBalancerInterface::movementStateToString(movementInfo.movementState).c_str());
 			}
 		}
 	} catch (Error& e) {

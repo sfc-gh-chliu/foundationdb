@@ -257,15 +257,14 @@ struct TenantMovementStatus {
 struct GetActiveMovementsReply {
 	constexpr static FileIdentifier file_identifier = 2320458;
 
-	std::vector<TenantMovementInfo> activeMovements;
-	Optional<Error> error;
+	std::vector<std::pair<TenantMovementInfo, Optional<Error>>> activeMovements;
 
 	GetActiveMovementsReply() {}
-	GetActiveMovementsReply(std::vector<TenantMovementInfo> activeMovements) : activeMovements(activeMovements) {}
+	GetActiveMovementsReply(std::vector<std::pair<TenantMovementInfo, Optional<Error>>> activeMovements) : activeMovements(activeMovements) {}
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, activeMovements, error);
+		serializer(ar, activeMovements);
 	}
 };
 

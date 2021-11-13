@@ -1297,37 +1297,33 @@ ACTOR Future<Void> getActiveMovements(TenantBalancer* self, GetActiveMovementsRe
 		}
 
 		wait(waitForAll(backupStateFutures));
-
 		GetActiveMovementsReply reply;
 		for (int i = 0; i < filteredMovements.size(); ++i) {
 			Optional<std::pair<MovementState, std::string>> newMovementState;
 			const auto& curBackupState = backupStateFutures[i].get();
 			if (curBackupState.isError()) {
-				if (curBackupState.getError().code() == error_code_timed_out) {
-					// A timeout happens during acquiring the current DR state
-					TraceEvent(SevWarn, "TenantBalancerOperationTimeout", self->tbi.id())
-					    .detail("OperationName", "getActiveMovements")
-					    .detail("TimeoutFunction", "getDrState")
-					    .detail("MovementId", filteredMovements[i]->getMovementId())
-					    .detail("SourcePrefix", filteredMovements[i]->getSourcePrefix())
-					    .detail("DestinationPrefix", filteredMovements[i]->getDestinationPrefix())
-					    .detail("MovementLocation",
-					            TenantBalancerInterface::movementLocationToString(
-					                filteredMovements[i]->getMovementLocation()));
-				}
-				if (!reply.error.present()) {
-					reply.error = curBackupState.getError();
-				}
+				TraceEvent(SevWarn, "TenantBalancerOperationTimeout", self->tbi.id())
+				    .error(curBackupState.getError())
+				    .detail("OperationName", "getActiveMovements")
+				    .detail("TimeoutFunction", "getDrState")
+				    .detail("MovementId", filteredMovements[i]->getMovementId())
+				    .detail("SourcePrefix", filteredMovements[i]->getSourcePrefix())
+				    .detail("DestinationPrefix", filteredMovements[i]->getDestinationPrefix())
+				    .detail(
+				        "MovementLocation",
+				        TenantBalancerInterface::movementLocationToString(filteredMovements[i]->getMovementLocation()));
 			} else {
 				newMovementState = drStateToMovementState(filteredMovements[i]->movementState, curBackupState.get());
 			}
 
-			reply.activeMovements.emplace_back(
-			    filteredMovements[i]->getMovementId(),
-			    filteredMovements[i]->getPeerDatabase()->getConnectionRecord()->getConnectionString().toString(),
-			    filteredMovements[i]->getSourcePrefix(),
-			    filteredMovements[i]->getDestinationPrefix(),
-			    newMovementState.present() ? newMovementState.get().first : filteredMovements[i]->movementState);
+			reply.activeMovements.push_back(
+			    { TenantMovementInfo(
+			          filteredMovements[i]->getMovementId(),
+			          filteredMovements[i]->getPeerDatabase()->getConnectionRecord()->getConnectionString().toString(),
+			          filteredMovements[i]->getSourcePrefix(),
+			          filteredMovements[i]->getDestinationPrefix(),
+			          newMovementState.present() ? newMovementState.get().first : filteredMovements[i]->movementState),
+			      curBackupState.isError() ? Optional<Error>() : curBackupState.getError() });
 		}
 
 		TraceEvent(SevDebug, "TenantBalancerGetActiveMovementsComplete", self->tbi.id())
@@ -1392,6 +1388,20 @@ ACTOR Future<double> getDatabaseVersionLag(TenantBalancer* self, Reference<const
 ACTOR Future<Void> getStatusAndUpdateMovementRecord(TenantBalancer* self,
                                                     Reference<MovementRecord> record,
                                                     TenantMovementStatus* status) {
+	status->tenantMovementInfo =
+	    TenantMovementInfo(record->getMovementId(),
+	                       record->getPeerDatabase()->getConnectionRecord()->getConnectionString().toString(),
+	                       record->getSourcePrefix(),
+	                       record->getDestinationPrefix(),
+	                       record->movementState);
+	// TODO update isSourceLocked and isDestinationLocked
+	status->isSourceLocked = false;
+	status->isDestinationLocked = false;
+
+	if (record->switchVersion != invalidVersion) {
+		status->switchVersion = record->switchVersion;
+	}
+
 	state DatabaseBackupStatus drStatus;
 	if (record->getMovementLocation() == MovementLocation::SOURCE) {
 		DatabaseBackupStatus s = wait(self->agent.getStatusData(record->getPeerDatabase(), 1, record->getTagName()));
@@ -1404,17 +1414,6 @@ ACTOR Future<Void> getStatusAndUpdateMovementRecord(TenantBalancer* self,
 
 	updateMovementRecordWithDrState(self, record, &drStatus);
 
-	status->tenantMovementInfo =
-	    TenantMovementInfo(record->getMovementId(),
-	                       record->getPeerDatabase()->getConnectionRecord()->getConnectionString().toString(),
-	                       record->getSourcePrefix(),
-	                       record->getDestinationPrefix(),
-	                       record->movementState);
-
-	// TODO update isSourceLocked and isDestinationLocked
-	status->isSourceLocked = false;
-	status->isDestinationLocked = false;
-
 	if (record->movementState == MovementState::STARTED || record->movementState == MovementState::READY_FOR_SWITCH ||
 	    record->movementState == MovementState::SWITCHING) {
 		double versionLag = wait(getDatabaseVersionLag(self, record));
@@ -1422,10 +1421,6 @@ ACTOR Future<Void> getStatusAndUpdateMovementRecord(TenantBalancer* self,
 		if (drStatus.secondsBehind != -1) {
 			status->mutationLag = drStatus.secondsBehind;
 		}
-	}
-
-	if (record->switchVersion != invalidVersion) {
-		status->switchVersion = record->switchVersion;
 	}
 
 	status->errorMessage = record->getErrorMessage();
@@ -1457,8 +1452,13 @@ ACTOR Future<Void> getMovementStatus(TenantBalancer* self, GetMovementStatusRequ
 
 		potentialTimeoutFunction = "saveMovementRecord";
 		if (mutableRecord.present()) {
-			wait(timeoutError(self->saveMovementRecord(mutableRecord.get()),
-			                  SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT));
+			ErrorOr<Void> saveRecordResult = wait(errorOr(timeoutError(
+			    self->saveMovementRecord(mutableRecord.get()), SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT)));
+			if (saveRecordResult.isError()) {
+				TraceEvent(SevWarn, "TenantBalancerSaveMovementRecordError", self->tbi.id())
+				    .error(saveRecordResult.getError())
+				    .detail("MovementId", record->getMovementId());
+			}
 		}
 
 		TraceEvent(SevDebug, "TenantBalancerGetMovementStatusComplete", self->tbi.id())
@@ -1801,80 +1801,60 @@ ACTOR Future<Void> clearTenant(TenantBalancer* self,
                                Reference<MovementRecordMap::MutableRecord> mutableRecord,
                                MovementLocation location,
                                bool doErase,
-                               bool doUnlock) {
+                               bool doUnlock,
+                               std::string* potentialTimeoutFunctionPtr) {
 	state Reference<MovementRecord> record = mutableRecord->record;
 	state Key targetPrefix =
 	    location == MovementLocation::SOURCE ? record->getSourcePrefix() : record->getDestinationPrefix();
-	state std::string potentialTimeoutFunction;
-	try {
-		if (doErase) {
-			// Erase the moved data, if desired
-			KeyRange rangeToErase = prefixRange(targetPrefix);
-			potentialTimeoutFunction = "runTenantBalancerTransaction(clear)";
-			Future<Void> clearTenantOrAbort =
-			    waitOrError(runTenantBalancerTransaction<Void>(self->db,
-			                                                   self->tbi.id(),
-			                                                   "ClearTenantErase",
-			                                                   [rangeToErase](Reference<ReadYourWritesTransaction> tr) {
-				                                                   tr->clear(rangeToErase);
-				                                                   return tr->commit();
-			                                                   }),
-			                record->onAbort());
-			wait(timeoutError(clearTenantOrAbort, SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT));
-			TraceEvent(SevDebug, "TenantBalancerPrefixErased", self->tbi.id())
-			    .detail("MovementId", record->getMovementId())
-			    .detail("Prefix", targetPrefix);
-		}
-		if (doUnlock) {
-			// Unlock the moved range, if desired
-			// TODO unlock tenant
+	if (doErase) {
+		// Erase the moved data, if desired
+		KeyRange rangeToErase = prefixRange(targetPrefix);
+		*potentialTimeoutFunctionPtr = "runTenantBalancerTransaction";
+		Future<Void> clearTenantOrAbort =
+		    waitOrError(runTenantBalancerTransaction<Void>(self->db,
+		                                                   self->tbi.id(),
+		                                                   "ClearTenantErase",
+		                                                   [rangeToErase](Reference<ReadYourWritesTransaction> tr) {
+			                                                   tr->clear(rangeToErase);
+			                                                   return tr->commit();
+		                                                   }),
+		                record->onAbort());
+		wait(timeoutError(clearTenantOrAbort, SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT));
+		TraceEvent(SevDebug, "TenantBalancerPrefixErased", self->tbi.id())
+		    .detail("MovementId", record->getMovementId())
+		    .detail("Prefix", targetPrefix);
+	}
+	if (doUnlock) {
+		// Unlock the moved range, if desired
+		// TODO unlock tenant
 
-			Future<Void> clearMovementRecordOrAbort =
-			    waitOrError(self->clearMovementRecord(mutableRecord), record->onAbort());
-			potentialTimeoutFunction = "clearMovementRecord";
-			wait(timeoutError(clearMovementRecordOrAbort, SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT));
-			TraceEvent(SevDebug, "TenantBalancerPrefixUnlocked", self->tbi.id())
-			    .detail("MovementId", record->getMovementId())
-			    .detail("Prefix", targetPrefix);
-		}
-	} catch (Error& e) {
-		if (e.code() == error_code_timed_out) {
-			TraceEvent(SevWarn, "TenantBalancerOperationTimeout", self->tbi.id())
-			    .detail("OperationName", "clearTenant")
-			    .detail("TimeoutFunction", potentialTimeoutFunction)
-			    .detail("Section", "doUnlock")
-			    .detail("Prefix", targetPrefix)
-			    .detail("MovementId", record->getMovementId());
-		}
-		throw e;
+		Future<Void> clearMovementRecordOrAbort =
+		    waitOrError(self->clearMovementRecord(mutableRecord), record->onAbort());
+		*potentialTimeoutFunctionPtr = "clearMovementRecord";
+		wait(timeoutError(clearMovementRecordOrAbort, SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT));
+		TraceEvent(SevDebug, "TenantBalancerPrefixUnlocked", self->tbi.id())
+		    .detail("MovementId", record->getMovementId())
+		    .detail("Prefix", targetPrefix);
 	}
 	return Void();
 }
 
 ACTOR Future<Void> rollbackMovement(TenantBalancer* self,
                                     Reference<MovementRecordMap::MutableRecord> mutableRecord,
-                                    bool eraseData) {
+                                    bool eraseData,
+                                    std::string* potentialTimeoutFunctionPtr) {
 	state Reference<MovementRecord> record = mutableRecord->record;
 	TraceEvent(SevDebug, "TenantBalancerRollbackMovement", self->tbi.id())
 	    .detail("MovementId", record->getMovementId())
 	    .detail("MovementStatus", TenantBalancerInterface::movementStateToString(record->movementState))
 	    .detail("SourcePrefix", record->getSourcePrefix())
 	    .detail("DestinationPreifx", record->getDestinationPrefix());
+	*potentialTimeoutFunctionPtr = "timeoutError";
 	ErrorOr<Void> result = wait(timeoutError(abortDr(self, record), SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT));
 	if (result.isError() && result.getError().code() != error_code_backup_unneeded) {
-		if (result.getError().code() == error_code_timed_out) {
-			TraceEvent(SevWarn, "TenantBalancerOperationTimeout", self->tbi.id())
-			    .detail("OperationName", "rollbackMovement")
-			    .detail("TimeoutFunction", "abortDr")
-			    .detail("MovementId", record->getMovementId())
-			    .detail("SourcePrefix", record->getSourcePrefix())
-			    .detail("DestinationPrefix", record->getDestinationPrefix())
-			    .detail("MovementLocation",
-			            TenantBalancerInterface::movementLocationToString(record->getMovementLocation()));
-		}
 		throw result.getError();
 	}
-	wait(clearTenant(self, mutableRecord, MovementLocation::DEST, eraseData, true));
+	wait(clearTenant(self, mutableRecord, MovementLocation::DEST, eraseData, true, potentialTimeoutFunctionPtr));
 	return Void();
 }
 
@@ -1885,26 +1865,14 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 	    .detail("MovementId", req.movementId)
 	    .detail("MovementLocation", TenantBalancerInterface::movementLocationToString(req.movementLocation))
 	    .detail("Prefix", req.prefix);
-
+	state std::string potentialTimeoutFunction;
 	try {
 		self->getMovementSnapshot(req.movementLocation, req.prefix, req.movementId)
 		    ->abort(); // abort other in-flight movements
-		state ErrorOr<Reference<MovementRecordMap::MutableRecord>> mutableRecordResult = wait(errorOr(
-		    timeoutError(self->mutateMovement(req.movementLocation, req.prefix, req.movementId),
-		                 SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT))); // wait until other operations finished
-		if (mutableRecordResult.isError()) {
-			if (mutableRecordResult.getError().code() == error_code_timed_out) {
-				TraceEvent(SevWarn, "TenantBalancerOperationTimeout", self->tbi.id())
-				    .detail("OperationName", "cleanupMovementSource")
-				    .detail("TimeoutFunction", "mutateOutgoingMovement")
-				    .detail("Prefix", req.prefix)
-				    .detail("MovementId", req.movementId)
-				    .detail("MovementLocation",
-				            TenantBalancerInterface::movementLocationToString(req.movementLocation));
-			}
-			throw mutableRecordResult.getError();
-		}
-		state Reference<MovementRecordMap::MutableRecord> mutableRecord = mutableRecordResult.get();
+		potentialTimeoutFunction = "mutateMovement";
+		state Reference<MovementRecordMap::MutableRecord> mutableRecord =
+		    wait(timeoutError(self->mutateMovement(req.movementLocation, req.prefix, req.movementId),
+		                      SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT));
 		state Reference<MovementRecord> record = mutableRecord->record;
 
 		state AbortState abortResult = AbortState::UNKNOWN;
@@ -1924,27 +1892,19 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 				if (req.abortInstruction == AbortState::COMPLETED) {
 					// Abort instruction is completed, consider the movement as completed
 					record->movementState = MovementState::COMPLETED;
-					wait(self->saveMovementRecord(mutableRecord));
+					potentialTimeoutFunction = "saveMovementRecord(MovementState::COMPLETED)";
+					wait(timeoutError(self->saveMovementRecord(mutableRecord),
+					                  SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT));
 				} else if (req.abortInstruction == AbortState::ROLLED_BACK) {
 					// Abort instruction is rollback
-					wait(rollbackMovement(self, mutableRecord, false));
+					wait(rollbackMovement(self, mutableRecord, false, &potentialTimeoutFunction));
 					abortResult = AbortState::ROLLED_BACK;
 				} else {
 					// There isn't any previous destination abort
+					potentialTimeoutFunction = "abortDr";
 					ErrorOr<Void> result =
 					    wait(timeoutError(abortDr(self, record), SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT));
 					if (result.isError() && result.getError().code() != error_code_backup_unneeded) {
-						if (result.getError().code() == error_code_timed_out) {
-							TraceEvent(SevWarn, "TenantBalancerOperationTimeout", self->tbi.id())
-							    .detail("OperationName", "abortMovement")
-							    .detail("TimeoutFunction", "abortDr")
-							    .detail("MovementId", record->getMovementId())
-							    .detail("SourcePrefix", record->getSourcePrefix())
-							    .detail("DestinationPrefix", record->getDestinationPrefix())
-							    .detail(
-							        "MovementLocation",
-							        TenantBalancerInterface::movementLocationToString(record->getMovementLocation()));
-						}
 						throw result.getError();
 					}
 					abortResult = AbortState::UNKNOWN;
@@ -1954,7 +1914,7 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 				if (req.abortInstruction == AbortState::COMPLETED) {
 					throw movement_abort_error();
 				}
-				wait(rollbackMovement(self, mutableRecord, false));
+				wait(rollbackMovement(self, mutableRecord, false, &potentialTimeoutFunction));
 				abortResult = AbortState::ROLLED_BACK;
 			}
 		} else {
@@ -1966,13 +1926,13 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 				TraceEvent(SevDebug, "TenantBalancerAbortCompletedMovement", self->tbi.id())
 				    .detail("MovementId", req.movementId)
 				    .detail("Prefix", req.prefix);
-				wait(clearTenant(self, mutableRecord, MovementLocation::DEST, false, true));
+				wait(clearTenant(self, mutableRecord, MovementLocation::DEST, false, true, &potentialTimeoutFunction));
 				abortResult = AbortState::COMPLETED;
 			} else {
 				if (req.abortInstruction == AbortState::COMPLETED) {
 					throw movement_abort_error();
 				}
-				wait(rollbackMovement(self, mutableRecord, true));
+				wait(rollbackMovement(self, mutableRecord, true, &potentialTimeoutFunction));
 				abortResult = AbortState::ROLLED_BACK;
 			}
 		}
@@ -1989,13 +1949,12 @@ ACTOR Future<Void> abortMovement(TenantBalancer* self, AbortMovementRequest req)
 		AbortMovementReply reply(abortResult);
 		req.reply.send(reply);
 	} catch (Error& e) {
-		if (e.code() != error_code_timed_out) {
-			TraceEvent(SevDebug, "TenantBalancerAbortError", self->tbi.id())
-			    .error(e)
-			    .detail("MovementId", req.movementId)
-			    .detail("MovementLocation", TenantBalancerInterface::movementLocationToString(req.movementLocation))
-			    .detail("Prefix", req.prefix);
-		}
+		TraceEvent(SevDebug, "TenantBalancerAbortError", self->tbi.id())
+		    .error(e)
+		    .detail("ErrorFunction", potentialTimeoutFunction)
+		    .detail("MovementId", req.movementId)
+		    .detail("MovementLocation", TenantBalancerInterface::movementLocationToString(req.movementLocation))
+		    .detail("Prefix", req.prefix);
 
 		req.reply.sendError(e);
 	}
@@ -2009,20 +1968,11 @@ ACTOR Future<Void> cleanupMovementSource(TenantBalancer* self, CleanupMovementSo
 	TraceEvent(SevDebug, "TenantBalancerCleanupMovementSource", self->tbi.id())
 	    .detail("Prefix", req.prefix)
 	    .detail("CleanupType", req.cleanupType);
-
+	state std::string potentialTimeoutFunction;
 	try {
-		state ErrorOr<Reference<MovementRecordMap::MutableRecord>> mutableRecordResult = wait(errorOr(
-		    timeoutError(self->mutateOutgoingMovement(req.prefix), SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT)));
-		if (mutableRecordResult.isError()) {
-			if (mutableRecordResult.getError().code() == error_code_timed_out) {
-				TraceEvent(SevWarn, "TenantBalancerOperationTimeout", self->tbi.id())
-				    .detail("OperationName", "cleanupMovementSource")
-				    .detail("TimeoutFunction", "mutateOutgoingMovement")
-				    .detail("Prefix", req.prefix);
-			}
-			throw mutableRecordResult.getError();
-		}
-		state Reference<MovementRecordMap::MutableRecord> mutableRecord = mutableRecordResult.get();
+		potentialTimeoutFunction = "mutateOutgoingMovement";
+		state Reference<MovementRecordMap::MutableRecord> mutableRecord = wait(
+		    timeoutError(self->mutateOutgoingMovement(req.prefix), SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT));
 		state Reference<MovementRecord> record = mutableRecord->record;
 
 		if (record->movementState != MovementState::COMPLETED) {
@@ -2037,7 +1987,8 @@ ACTOR Future<Void> cleanupMovementSource(TenantBalancer* self, CleanupMovementSo
 		                 mutableRecord,
 		                 MovementLocation::SOURCE,
 		                 req.cleanupType != CleanupMovementSourceRequest::CleanupType::UNLOCK,
-		                 req.cleanupType != CleanupMovementSourceRequest::CleanupType::ERASE));
+		                 req.cleanupType != CleanupMovementSourceRequest::CleanupType::ERASE,
+		                 &potentialTimeoutFunction));
 
 		TraceEvent(SevDebug, "TenantBalancerCleanupMovementSourceComplete", self->tbi.id())
 		    .detail("MovementId", record->getMovementId())
@@ -2047,12 +1998,11 @@ ACTOR Future<Void> cleanupMovementSource(TenantBalancer* self, CleanupMovementSo
 		CleanupMovementSourceReply reply;
 		req.reply.send(reply);
 	} catch (Error& e) {
-		if (e.code() != error_code_timed_out) {
-			TraceEvent(SevDebug, "TenantBalancerCleanupMovementSourceError", self->tbi.id())
-			    .error(e)
-			    .detail("Prefix", req.prefix)
-			    .detail("CleanupType", req.cleanupType);
-		}
+		TraceEvent(SevDebug, "TenantBalancerCleanupMovementSourceError", self->tbi.id())
+		    .error(e)
+		    .detail("ErrorFunction", potentialTimeoutFunction)
+		    .detail("Prefix", req.prefix)
+		    .detail("CleanupType", req.cleanupType);
 
 		req.reply.sendError(e);
 	}
