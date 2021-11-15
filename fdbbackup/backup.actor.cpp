@@ -2273,7 +2273,6 @@ ACTOR Future<std::vector<std::pair<TenantMovementInfo, Optional<Error>>>> getAct
 			if (reply.isError()) {
 				throw reply.getError();
 			}
-
 			return reply.get().activeMovements;
 		}
 		when(wait(database->onTenantBalancerChanged() || initialize)) {
