@@ -64,6 +64,9 @@ std::string TenantMovementStatus::toJson() const {
 	statusRoot.create("destinationPrefix") = printable(tenantMovementInfo.destinationPrefix);
 	statusRoot.create("movementState") =
 	    TenantBalancerInterface::movementStateToString(tenantMovementInfo.movementState);
+	if (tenantMovementInfo.error.present()) {
+		statusRoot.create("error") = tenantMovementInfo.error.get().what();
+	}
 
 	// Insert movement status into JSON
 	statusRoot.create("isSourceLocked") = isSourceLocked;

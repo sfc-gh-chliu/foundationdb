@@ -205,6 +205,7 @@ struct TenantMovementInfo {
 	Key sourcePrefix;
 	Key destinationPrefix;
 	MovementState movementState;
+	Optional<Error> error;
 
 	TenantMovementInfo() {}
 	TenantMovementInfo(UID movementId,
@@ -257,10 +258,10 @@ struct TenantMovementStatus {
 struct GetActiveMovementsReply {
 	constexpr static FileIdentifier file_identifier = 2320458;
 
-	std::vector<std::pair<TenantMovementInfo, Optional<Error>>> activeMovements;
+	std::vector<TenantMovementInfo> activeMovements;
 
 	GetActiveMovementsReply() {}
-	GetActiveMovementsReply(std::vector<std::pair<TenantMovementInfo, Optional<Error>>> activeMovements) : activeMovements(activeMovements) {}
+	GetActiveMovementsReply(std::vector<TenantMovementInfo> activeMovements) : activeMovements(activeMovements) {}
 
 	template <class Ar>
 	void serialize(Ar& ar) {
@@ -295,7 +296,6 @@ struct GetMovementStatusReply {
 	constexpr static FileIdentifier file_identifier = 4693499;
 
 	TenantMovementStatus movementStatus;
-	Optional<Error> error;
 
 	GetMovementStatusReply() {}
 	GetMovementStatusReply(TenantMovementStatus movementStatus) : movementStatus(movementStatus) {}

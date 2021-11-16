@@ -2185,10 +2185,6 @@ ACTOR Future<TenantMovementStatus> getMovementStatus(Database database, Key pref
 			if (reply.isError()) {
 				throw reply.getError();
 			}
-			if (reply.get().error.present()) {
-				printf("Error occurs during acquiring movement status in the server side: %s\n",
-				       reply.get().error.get().what());
-			}
 			return reply.get().movementStatus;
 		}
 		when(wait(database->onTenantBalancerChanged() || initialize)) {
@@ -2204,11 +2200,14 @@ ACTOR Future<TenantMovementStatus> getMovementStatus(Database database, Key pref
 ACTOR Future<Void> statusDBMove(Database db, Key prefix, MovementLocation movementLocation, bool json = false) {
 	try {
 		state TenantMovementStatus status = wait(getMovementStatus(db, prefix, movementLocation));
-
 		if (json) {
 			printf("%s\n", status.toJson().c_str());
 		} else {
 			printf("Status for the movement with ID %s:\n", status.tenantMovementInfo.movementId.toString().c_str());
+			if (status.tenantMovementInfo.error.present()) {
+				printf("Error occurs during acquiring movement status in the server side: %s\n",
+				       status.tenantMovementInfo.error.get().what());
+			}
 			printf("  Movement state: %s\n",
 			       TenantBalancerInterface::movementStateToString(status.tenantMovementInfo.movementState).c_str());
 			printf("  Moving prefix: %s\n", printable(status.tenantMovementInfo.sourcePrefix).c_str());
@@ -2259,7 +2258,7 @@ ACTOR Future<Void> statusDBMove(Database db, Key prefix, MovementLocation moveme
 	return Void();
 }
 
-ACTOR Future<std::vector<std::pair<TenantMovementInfo, Optional<Error>>>> getActiveMovements(
+ACTOR Future<std::vector<TenantMovementInfo>> getActiveMovements(
     Database database,
     Optional<std::string> peerDatabaseConnectionStringFilter,
     Optional<MovementLocation> locationFilter) {
@@ -2290,7 +2289,7 @@ ACTOR Future<Void> fetchAndDisplayDBMove(Database db,
                                          MovementLocation locationFilter) {
 	try {
 		// Get active movement list
-		state std::vector<std::pair<TenantMovementInfo, Optional<Error>>> activeMovements =
+		state std::vector<TenantMovementInfo> activeMovements =
 		    wait(getActiveMovements(db, peerDatabaseConnectionStringFilter, locationFilter));
 
 		if (activeMovements.empty()) {
@@ -2302,12 +2301,12 @@ ACTOR Future<Void> fetchAndDisplayDBMove(Database db,
 				printf("There are %d active movements:\n\n", activeMovements.size());
 			}
 			for (int i = 0; i < activeMovements.size(); ++i) {
-				if (activeMovements[i].second.present()) {
-					printf("Error happened while acquiring the movement information in the server side: %s\n",
-					       activeMovements[i].second.get().what());
-				}
-				const auto& movementInfo = activeMovements[i].first;
+				const auto& movementInfo = activeMovements[i];
 				printf("%d. %s\n", i + 1, movementInfo.movementId.toString().c_str());
+				if (movementInfo.error.present()) {
+					printf("  Error happened while acquiring the movement information in the server side: %s\n",
+					       movementInfo.error.get().what());
+				}
 				if (locationFilter == MovementLocation::SOURCE) {
 					printf("  Prefix: %s\n", printable(movementInfo.sourcePrefix).c_str());
 					if (!peerDatabaseConnectionStringFilter.present()) {
@@ -2364,18 +2363,17 @@ ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> ma
 			state TenantMovementStatus status = wait(getMovementStatus(src, srcPrefix, MovementLocation::SOURCE));
 			if (!status.mutationLag.present()) {
 				fprintf(stderr,
-				        "Mutation lag for prefix: %s on database: %s is unavailable\n",
+				        "The movement with prefix: %s on database: %s is not ready to be finished.\n",
 				        srcPrefix.toString().c_str(),
 				        src->getConnectionRecord()->getConnectionString().toString().c_str());
 				return Void();
 			}
 			timeoutLimit = status.mutationLag.get();
 		}
-		printf("Expected finish time duration is: %d\n", timeoutLimit);
 
 		loop choose {
-			when(ErrorOr<FinishSourceMovementReply> reply =
-			         wait(timeoutError(finishSourceMovementReply, timeoutLimit))) {
+			when(ErrorOr<FinishSourceMovementReply> reply = wait(timeoutError(
+			         finishSourceMovementReply, timeoutLimit + CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT))) {
 				if (reply.isError()) {
 					throw reply.getError();
 				}
