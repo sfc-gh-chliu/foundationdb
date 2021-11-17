@@ -388,7 +388,8 @@ public:
 
 	ACTOR static Future<Void> saveRecordImpl(MovementRecordMap* self,
 	                                         Database db,
-	                                         Reference<const MutableRecord> mutableRecord) {
+	                                         Reference<const MutableRecord> mutableRecord,
+	                                         bool persistent = true) {
 
 		state Reference<MovementRecord> record = mutableRecord->record;
 		auto itr = self->movementRecords.find(record->getLocalPrefix());
@@ -397,12 +398,16 @@ public:
 
 		Key key = record->getKey();
 		Value value = record->toValue();
+		double timeoutLimit = persistent ? DBL_MAX : SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT;
 
-		wait(runTenantBalancerTransaction<Void>(
-		    db, self->id, "SaveMovementRecord", [key, value](Reference<ReadYourWritesTransaction> tr) {
-			    tr->set(key, value);
-			    return tr->commit();
-		    }));
+		wait(timeout(runTenantBalancerTransaction<Void>(db,
+		                                                self->id,
+		                                                "SaveMovementRecord",
+		                                                [key, value](Reference<ReadYourWritesTransaction> tr) {
+			                                                tr->set(key, value);
+			                                                return tr->commit();
+		                                                }),
+		             timeoutLimit));
 
 		auto afterTrItr = self->movementRecords.find(record->getLocalPrefix());
 		ASSERT(afterTrItr != self->movementRecords.end());
@@ -412,6 +417,10 @@ public:
 	}
 	Future<Void> saveRecord(Database db, Reference<const MutableRecord> mutableRecord) {
 		return saveRecordImpl(this, db, mutableRecord);
+	}
+
+	Future<Void> trySaveRecord(Database db, Reference<const MutableRecord> mutableRecord) {
+		return saveRecordImpl(this, db, mutableRecord, false);
 	}
 
 	ACTOR static Future<Void> eraseRecordImpl(MovementRecordMap* self,
@@ -592,6 +601,13 @@ struct TenantBalancer {
 		                                                                                           : incomingMovements;
 		return movements.saveRecord(db, mutableRecord);
 	}
+
+	Future<Void> trySaveMovementRecord(Reference<const MovementRecordMap::MutableRecord> mutableRecord) {
+		auto& movements = mutableRecord->record->getMovementLocation() == MovementLocation::SOURCE ? outgoingMovements
+		                                                                                           : incomingMovements;
+		return movements.trySaveRecord(db, mutableRecord);
+	}
+
 	ACTOR Future<Reference<MovementRecordMap::MutableRecord>> createAndGetMovementRecordImpl(
 	    TenantBalancer* self,
 	    MovementLocation location,
@@ -1076,9 +1092,7 @@ ACTOR Future<ReceiveTenantFromClusterReply> startSourceMovement(
 				    .detail("DestinationConnectionString",
 				            record->getPeerDatabase()->getConnectionRecord()->getConnectionString().toString());
 				// If recovery fails, then record the error in memory
-				(const_cast<MovementRecord*>(
-				     self->getOutgoingMovementSnapshot(record->getLocalPrefix(), record->getMovementId()).getPtr()))
-				    ->setMovementError(format("Failed to cleanup movement: %s", cleanupErr.what()));
+				self->trySaveMovementRecord(mutableRecord);
 			}
 		}
 
@@ -1141,9 +1155,7 @@ ACTOR Future<ReceiveTenantFromClusterReply> startSourceMovement(
 				    .detail("DestinationConnectionString",
 				            record->getPeerDatabase()->getConnectionRecord()->getConnectionString().toString());
 				// If recovery fails, then record the error in memory
-				(const_cast<MovementRecord*>(
-				     self->getOutgoingMovementSnapshot(record->getLocalPrefix(), record->getMovementId()).getPtr()))
-				    ->setMovementError(format("Failed to cleanup movement: %s", cleanupErr.what()));
+				self->trySaveMovementRecord(mutableRecord);
 			}
 		}
 
