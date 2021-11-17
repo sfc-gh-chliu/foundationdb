@@ -212,15 +212,16 @@ struct TenantMovementInfo {
 	                   std::string peerConnectionString,
 	                   Key sourcePrefix,
 	                   Key destinationPrefix,
-	                   MovementState movementState)
+	                   MovementState movementState,
+	                   Optional<Error> error = Optional<Error>())
 	  : movementId(movementId), peerConnectionString(peerConnectionString), sourcePrefix(sourcePrefix),
-	    destinationPrefix(destinationPrefix), movementState(movementState) {}
+	    destinationPrefix(destinationPrefix), movementState(movementState), error(error) {}
 
 	std::string toString() const;
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, movementId, peerConnectionString, sourcePrefix, destinationPrefix, movementState);
+		serializer(ar, movementId, peerConnectionString, sourcePrefix, destinationPrefix, movementState, error);
 	}
 };
 
@@ -302,7 +303,7 @@ struct GetMovementStatusReply {
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, movementStatus, error);
+		serializer(ar, movementStatus);
 	}
 };
 

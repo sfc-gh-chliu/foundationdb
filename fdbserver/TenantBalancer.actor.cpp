@@ -1075,7 +1075,10 @@ ACTOR Future<ReceiveTenantFromClusterReply> startSourceMovement(
 				    .detail("DestinationPrefix", record->getDestinationPrefix())
 				    .detail("DestinationConnectionString",
 				            record->getPeerDatabase()->getConnectionRecord()->getConnectionString().toString());
-				record->setMovementError(format("Failed to cleanup movement: %s", cleanupErr.what()));
+				// If recovery fails, then record the error in memory
+				(const_cast<MovementRecord*>(
+				     self->getOutgoingMovementSnapshot(record->getLocalPrefix(), record->getMovementId()).getPtr()))
+				    ->setMovementError(format("Failed to cleanup movement: %s", cleanupErr.what()));
 			}
 		}
 
@@ -1137,7 +1140,10 @@ ACTOR Future<ReceiveTenantFromClusterReply> startSourceMovement(
 				    .detail("DestinationPrefix", record->getDestinationPrefix())
 				    .detail("DestinationConnectionString",
 				            record->getPeerDatabase()->getConnectionRecord()->getConnectionString().toString());
-				record->setMovementError(format("Failed to cleanup movement: %s", cleanupErr.what()));
+				// If recovery fails, then record the error in memory
+				(const_cast<MovementRecord*>(
+				     self->getOutgoingMovementSnapshot(record->getLocalPrefix(), record->getMovementId()).getPtr()))
+				    ->setMovementError(format("Failed to cleanup movement: %s", cleanupErr.what()));
 			}
 		}
 
@@ -1571,9 +1577,8 @@ ACTOR Future<Void> sendFinishRequestToDestination(TenantBalancer* self,
 }
 
 ACTOR Future<bool> isPeerAlive(TenantBalancer* self, Reference<MovementRecord> record) {
-	state GetMovementStatusReply peerStatusReply;
 	try {
-		peerStatusReply = wait(timeoutError(
+		state GetMovementStatusReply peerStatusReply = wait(timeoutError(
 		    sendTenantBalancerRequest(record->getPeerDatabase(),
 		                              GetMovementStatusRequest(record->getRemotePrefix(),
 		                                                       record->getMovementLocation() == MovementLocation::SOURCE
