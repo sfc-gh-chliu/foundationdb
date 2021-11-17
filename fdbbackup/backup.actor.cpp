@@ -2372,8 +2372,9 @@ ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> ma
 		}
 
 		loop choose {
-			when(ErrorOr<FinishSourceMovementReply> reply = wait(timeoutError(
-			         finishSourceMovementReply, timeoutLimit + CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT))) {
+			when(ErrorOr<FinishSourceMovementReply> reply =
+			         wait(timeoutError(finishSourceMovementReply,
+			                           std::max(2 * timeoutLimit, CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT)))) {
 				if (reply.isError()) {
 					throw reply.getError();
 				}
