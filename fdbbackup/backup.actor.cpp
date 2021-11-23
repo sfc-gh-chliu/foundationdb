@@ -2204,10 +2204,6 @@ ACTOR Future<Void> statusDBMove(Database db, Key prefix, MovementLocation moveme
 			printf("%s\n", status.toJson().c_str());
 		} else {
 			printf("Status for the movement with ID %s:\n", status.tenantMovementInfo.movementId.toString().c_str());
-			if (status.tenantMovementInfo.error.present()) {
-				printf("Error occurs during acquiring movement status in the server side: %s\n",
-				       status.tenantMovementInfo.error.get().what());
-			}
 			printf("  Movement state: %s\n",
 			       TenantBalancerInterface::movementStateToString(status.tenantMovementInfo.movementState).c_str());
 			printf("  Moving prefix: %s\n", printable(status.tenantMovementInfo.sourcePrefix).c_str());
@@ -2218,6 +2214,10 @@ ACTOR Future<Void> statusDBMove(Database db, Key prefix, MovementLocation moveme
 				printf("  Destination cluster: %s\n", status.tenantMovementInfo.peerConnectionString.c_str());
 			} else {
 				printf("  Source cluster: %s\n", status.tenantMovementInfo.peerConnectionString.c_str());
+			}
+			if (status.tenantMovementInfo.tenantMovementInfoError.present()) {
+				printf("Errors during acquiring tenant movement information: %s\n",
+				       status.tenantMovementInfo.tenantMovementInfoError.get().what());
 			}
 			printf("  Source locked: %s\n", status.isSourceLocked ? "true" : "false");
 			printf("  Destination locked: %s\n", status.isDestinationLocked ? "true" : "false");
@@ -2303,10 +2303,6 @@ ACTOR Future<Void> fetchAndDisplayDBMove(Database db,
 			for (int i = 0; i < activeMovements.size(); ++i) {
 				const auto& movementInfo = activeMovements[i];
 				printf("%d. %s\n", i + 1, movementInfo.movementId.toString().c_str());
-				if (movementInfo.error.present()) {
-					printf("  Error happened while acquiring the movement information in the server side: %s\n",
-					       movementInfo.error.get().what());
-				}
 				if (locationFilter == MovementLocation::SOURCE) {
 					printf("  Prefix: %s\n", printable(movementInfo.sourcePrefix).c_str());
 					if (!peerDatabaseConnectionStringFilter.present()) {
@@ -2326,6 +2322,9 @@ ACTOR Future<Void> fetchAndDisplayDBMove(Database db,
 				}
 				printf("  Movement state: %s\n\n",
 				       TenantBalancerInterface::movementStateToString(movementInfo.movementState).c_str());
+				if (movementInfo.tenantMovementInfoError.present()) {
+					printf("  Error: %s\n", movementInfo.tenantMovementInfoError.get().what());
+				}
 			}
 		}
 	} catch (Error& e) {
@@ -2362,10 +2361,7 @@ ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> ma
 		} else {
 			state TenantMovementStatus status = wait(getMovementStatus(src, srcPrefix, MovementLocation::SOURCE));
 			if (!status.mutationLag.present()) {
-				fprintf(stderr,
-				        "The movement with prefix: %s on database: %s is not ready to be finished.\n",
-				        srcPrefix.toString().c_str(),
-				        src->getConnectionRecord()->getConnectionString().toString().c_str());
+				fprintf(stderr, "ERROR: The movement is not ready to be finished.\n");
 				return Void();
 			}
 			timeoutLimit = status.mutationLag.get();

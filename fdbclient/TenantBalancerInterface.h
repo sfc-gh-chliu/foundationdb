@@ -205,7 +205,7 @@ struct TenantMovementInfo {
 	Key sourcePrefix;
 	Key destinationPrefix;
 	MovementState movementState;
-	Optional<Error> error;
+	Optional<Error> tenantMovementInfoError; // Error happens during acquiring variables inside the TenantMovementInfo
 
 	TenantMovementInfo() {}
 	TenantMovementInfo(UID movementId,
@@ -213,15 +213,22 @@ struct TenantMovementInfo {
 	                   Key sourcePrefix,
 	                   Key destinationPrefix,
 	                   MovementState movementState,
-	                   Optional<Error> error = Optional<Error>())
+	                   Optional<Error> tenantMovementInfoError = Optional<Error>())
 	  : movementId(movementId), peerConnectionString(peerConnectionString), sourcePrefix(sourcePrefix),
-	    destinationPrefix(destinationPrefix), movementState(movementState), error(error) {}
+	    destinationPrefix(destinationPrefix), movementState(movementState),
+	    tenantMovementInfoError(tenantMovementInfoError) {}
 
 	std::string toString() const;
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, movementId, peerConnectionString, sourcePrefix, destinationPrefix, movementState, error);
+		serializer(ar,
+		           movementId,
+		           peerConnectionString,
+		           sourcePrefix,
+		           destinationPrefix,
+		           movementState,
+		           tenantMovementInfoError);
 	}
 };
 
