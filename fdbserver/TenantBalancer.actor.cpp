@@ -1431,17 +1431,6 @@ ACTOR Future<double> getDatabaseVersionLag(TenantBalancer* self, Reference<const
 	return std::max<double>(sourceVersion - destVersion, 0) / CLIENT_KNOBS->CORE_VERSIONSPERSECOND;
 }
 
-ACTOR
-template <class T>
-Future<ErrorOr<Void>> waitAndAssign(T* out, Future<T> what) {
-	ErrorOr<T> res = wait(errorOr(what));
-	if (res.isError()) {
-		return res.getError();
-	}
-	*out = res.get();
-	return Void();
-}
-
 ACTOR Future<TenantMovementStatus> getStatusAndUpdateMovementRecord(TenantBalancer* self,
                                                                     Reference<MovementRecord> record) {
 	state TenantMovementStatus status;
@@ -1467,16 +1456,16 @@ ACTOR Future<TenantMovementStatus> getStatusAndUpdateMovementRecord(TenantBalanc
 	state DatabaseBackupStatus drStatus;
 	if (record->getMovementLocation() == MovementLocation::SOURCE) {
 		Future<ErrorOr<Void>> tempBackupStatusFuture =
-		    waitAndAssign(&drStatus,
+		    errorOr(store(drStatus,
 		                  timeoutError(self->agent.getStatusData(record->getPeerDatabase(), 1, record->getTagName()),
-		                               SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT));
+		                               SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT)));
 		backupStatusFuture = tempBackupStatusFuture;
 	} else {
 		state DatabaseBackupAgent sourceAgent(record->getPeerDatabase());
 		Future<ErrorOr<Void>> tempBackupStatusFuture =
-		    waitAndAssign(&drStatus,
+		    errorOr(store(drStatus,
 		                  timeoutError(sourceAgent.getStatusData(self->db, 1, record->getTagName()),
-		                               SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT));
+		                               SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT)));
 		backupStatusFuture = tempBackupStatusFuture;
 	}
 	statusFutures.push_back(backupStatusFuture);
@@ -1488,9 +1477,9 @@ ACTOR Future<TenantMovementStatus> getStatusAndUpdateMovementRecord(TenantBalanc
 	state Future<ErrorOr<Void>> versionLagFuture;
 	state double versionLag;
 	if (canAcquireDatabaseVersionLag) {
-		statusFutures.push_back(waitAndAssign(
-		    &versionLag,
-		    timeoutError(getDatabaseVersionLag(self, record), SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT)));
+		statusFutures.push_back(errorOr(
+		    store(versionLag,
+		          timeoutError(getDatabaseVersionLag(self, record), SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT))));
 	}
 	wait(waitForAll(statusFutures));
 
