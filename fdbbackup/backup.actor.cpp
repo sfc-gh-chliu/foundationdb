@@ -1506,7 +1506,7 @@ static void printDBBackupUsage(bool devhelp) {
 // TODO: need to update the usage describtion here
 static void printDBMovementUsage(bool devhelp) {
 	printf("FoundationDB " FDB_VT_PACKAGE_NAME " (v" FDB_VT_VERSION ")\n");
-	printf("Usage: %s [TOP_LEVEL_OPTIONS] (start | status | finish | abort | cleanup | clear | list) [OPTIONS]\n\n",
+	printf("Usage: %s [TOP_LEVEL_OPTIONS] (start | status | finish | abort | clear | list) [OPTIONS]\n\n",
 	       exeDatabaseMovement.toString().c_str());
 
 	printf(" TOP LEVEL OPTIONS:\n");
