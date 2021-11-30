@@ -1369,7 +1369,7 @@ ACTOR Future<Void> getActiveMovements(TenantBalancer* self, GetActiveMovementsRe
 			    filteredMovements[i]->getSourcePrefix(),
 			    filteredMovements[i]->getDestinationPrefix(),
 			    newMovementState.present() ? newMovementState.get().first : filteredMovements[i]->movementState,
-			    curBackupState.isError() ? Optional<Error>() : curBackupState.getError());
+			    curBackupState.isError() ? curBackupState.getError() : Optional<Error>());
 		}
 
 		TraceEvent(SevDebug, "TenantBalancerGetActiveMovementsComplete", self->tbi.id())
@@ -1477,9 +1477,11 @@ ACTOR Future<TenantMovementStatus> getStatusAndUpdateMovementRecord(TenantBalanc
 	state Future<ErrorOr<Void>> versionLagFuture;
 	state double versionLag;
 	if (canAcquireDatabaseVersionLag) {
-		statusFutures.push_back(errorOr(
+		Future<ErrorOr<Void>> tempVersionLagFuture = errorOr(
 		    store(versionLag,
-		          timeoutError(getDatabaseVersionLag(self, record), SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT))));
+		          timeoutError(getDatabaseVersionLag(self, record), SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT)));
+		versionLagFuture = tempVersionLagFuture;
+		statusFutures.push_back(versionLagFuture);
 	}
 	wait(waitForAll(statusFutures));
 
