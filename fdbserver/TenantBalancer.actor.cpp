@@ -1477,10 +1477,9 @@ ACTOR Future<TenantMovementStatus> getStatusAndUpdateMovementRecord(TenantBalanc
 	state Future<ErrorOr<Void>> versionLagFuture;
 	state double versionLag;
 	if (canAcquireDatabaseVersionLag) {
-		Future<ErrorOr<Void>> tempVersionLagFuture = errorOr(
+		versionLagFuture = errorOr(
 		    store(versionLag,
 		          timeoutError(getDatabaseVersionLag(self, record), SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT)));
-		versionLagFuture = tempVersionLagFuture;
 		statusFutures.push_back(versionLagFuture);
 	}
 	wait(waitForAll(statusFutures));
