@@ -4493,10 +4493,8 @@ int main(int argc, char* argv[]) {
 				char* param = args->OptionArg();
 				char* end = nullptr;
 				double parseResult = std::strtod(param, &end);
-				if (end != nullptr || parseResult == 0) {
-					std::string errorMessage =
-					    end != nullptr ? "max lag seconds parameter parsing error" : "max lag seconds illegal";
-					fprintf(stderr, "ERROR: %s `%s'\n", errorMessage.c_str(), param);
+				if (*end != 0) {
+					fprintf(stderr, "ERROR: max lag seconds illegal `%s'\n", param);
 					printHelpTeaser(argv[0]);
 					return FDB_EXIT_ERROR;
 				}

@@ -1854,15 +1854,11 @@ ACTOR Future<Void> clearTenant(TenantBalancer* self,
 	if (doErase) {
 		// Erase the moved data, if desired
 		KeyRange rangeToErase = prefixRange(targetPrefix);
-		Future<Void> clearTenantOrAbort =
-		    waitOrError(runTenantBalancerTransaction<Void>(self->db,
-		                                                   self->tbi.id(),
-		                                                   "ClearTenantErase",
-		                                                   [rangeToErase](Reference<ReadYourWritesTransaction> tr) {
-			                                                   tr->clear(rangeToErase);
-			                                                   return tr->commit();
-		                                                   }),
-		                record->onAbort());
+		Future<Void> clearTenantOrAbort = (runTenantBalancerTransaction<Void>(
+		    self->db, self->tbi.id(), "ClearTenantErase", [rangeToErase](Reference<ReadYourWritesTransaction> tr) {
+			    tr->clear(rangeToErase);
+			    return tr->commit();
+		    }));
 		wait(timeoutError(clearTenantOrAbort, SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT));
 		TraceEvent("TenantBalancerPrefixErased", self->tbi.id())
 		    .detail("MovementId", record->getMovementId())
@@ -1872,9 +1868,7 @@ ACTOR Future<Void> clearTenant(TenantBalancer* self,
 		// Unlock the moved range, if desired
 		// TODO unlock tenant
 
-		Future<Void> clearMovementRecordOrAbort =
-		    waitOrError(self->clearMovementRecord(mutableRecord), record->onAbort());
-		wait(timeoutError(clearMovementRecordOrAbort, SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT));
+		wait(timeoutError(self->clearMovementRecord(mutableRecord), SERVER_KNOBS->TENANT_BALANCER_OPERATION_TIMEOUT));
 		TraceEvent(SevDebug, "TenantBalancerPrefixUnlocked", self->tbi.id())
 		    .detail("MovementId", record->getMovementId())
 		    .detail("Prefix", targetPrefix);
