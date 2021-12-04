@@ -122,7 +122,7 @@ public:
 		           sourcePrefix,
 		           destinationPrefix,
 		           peerDatabaseName,
-		           errorMessage,
+		           errorMessages,
 		           switchVersion);
 	}
 
@@ -150,12 +150,10 @@ public:
 
 	void setMovementError(const std::string& errorMessage) {
 		movementState = MovementState::ERROR;
-		if (!this->errorMessage.present()) {
-			this->errorMessage = errorMessage;
-		}
+		errorMessages.emplace_back(errorMessage);
 	}
 
-	Optional<std::string> getErrorMessage() const { return errorMessage; }
+	std::vector<std::string> getErrorMessages() const { return errorMessages; }
 
 	void abort() const {
 		if (!abortPromise.isSet()) {
@@ -174,7 +172,7 @@ public:
 
 		record->movementState = movementState;
 		record->switchVersion = switchVersion;
-		record->errorMessage = errorMessage;
+		record->errorMessages = errorMessages;
 		record->abortPromise = abortPromise;
 
 		return record;
@@ -190,7 +188,7 @@ private:
 
 	std::string peerDatabaseName;
 	Database peerDatabase;
-	Optional<std::string> errorMessage;
+	std::vector<std::string> errorMessages;
 
 	Promise<Void> abortPromise;
 };
@@ -1369,7 +1367,9 @@ ACTOR Future<Void> getActiveMovements(TenantBalancer* self, GetActiveMovementsRe
 			    filteredMovements[i]->getSourcePrefix(),
 			    filteredMovements[i]->getDestinationPrefix(),
 			    newMovementState.present() ? newMovementState.get().first : filteredMovements[i]->movementState,
-			    curBackupState.isError() ? curBackupState.getError() : Optional<Error>());
+			    curBackupState.isError()
+			        ? format("Movement status is incomplete (%s)", curBackupState.getError().what())
+			        : Optional<std::string>());
 		}
 
 		TraceEvent(SevDebug, "TenantBalancerGetActiveMovementsComplete", self->tbi.id())
@@ -1493,7 +1493,10 @@ ACTOR Future<TenantMovementStatus> getStatusAndUpdateMovementRecord(TenantBalanc
 		    .detail("TagName", record->getTagName())
 		    .detail("PeerConnectionString",
 		            record->getPeerDatabase()->getConnectionRecord()->getConnectionString().toString());
-		status.tenantMovementInfo.tenantMovementInfoError = e;
+
+		std::string errorMessage = format("Movement status is incomplete (%s)", e.what());
+		record->setMovementError(errorMessage);
+		status.tenantMovementInfo.tenantMovementInfoErrorMessage = errorMessage;
 	} else {
 		updateMovementRecordWithDrState(self, record, &drStatus);
 		if (drStatus.secondsBehind != -1) {
@@ -1516,7 +1519,7 @@ ACTOR Future<TenantMovementStatus> getStatusAndUpdateMovementRecord(TenantBalanc
 		}
 	}
 
-	status.errorMessage = record->getErrorMessage();
+	status.errorMessages = record->getErrorMessages();
 	return status;
 }
 
@@ -1623,6 +1626,19 @@ ACTOR Future<bool> isPeerAlive(TenantBalancer* self, Reference<MovementRecord> r
 	}
 }
 
+template <class T>
+std::string vectorToString(const std::vector<T>& arr) {
+	std::string res;
+	if (arr.empty()) {
+		return res;
+	}
+	res += arr[0];
+	for (int i = 1; i < arr.size(); ++i) {
+		res += ", " + arr[i];
+	}
+	return res;
+}
+
 ACTOR Future<Void> finishSourceMovement(TenantBalancer* self, FinishSourceMovementRequest req) {
 	++self->finishSourceMovementRequests;
 
@@ -1661,7 +1677,7 @@ ACTOR Future<Void> finishSourceMovement(TenantBalancer* self, FinishSourceMoveme
 			    .detail("DestinationPrefix", record->getDestinationPrefix())
 			    .detail("PeerConnectionString",
 			            record->getPeerDatabase()->getConnectionRecord()->getConnectionString().toString())
-			    .detail("MovementError", record->getErrorMessage());
+			    .detail("MovementError", vectorToString(record->getErrorMessages()));
 
 			throw movement_error();
 		}

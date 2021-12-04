@@ -2215,10 +2215,6 @@ ACTOR Future<Void> statusDBMove(Database db, Key prefix, MovementLocation moveme
 			} else {
 				printf("  Source cluster: %s\n", status.tenantMovementInfo.peerConnectionString.c_str());
 			}
-			if (status.tenantMovementInfo.tenantMovementInfoError.present()) {
-				printf("Errors during acquiring tenant movement information: %s\n",
-				       status.tenantMovementInfo.tenantMovementInfoError.get().what());
-			}
 			printf("  Source locked: %s\n", status.isSourceLocked ? "true" : "false");
 			printf("  Destination locked: %s\n", status.isDestinationLocked ? "true" : "false");
 			printf("  Destination database version lag: %.03f seconds\n", status.databaseVersionLag);
@@ -2228,8 +2224,11 @@ ACTOR Future<Void> statusDBMove(Database db, Key prefix, MovementLocation moveme
 			if (status.switchVersion.present()) {
 				printf("  Switch version: %lld\n", status.switchVersion.get());
 			}
-			if (status.errorMessage.present()) {
-				printf("  Error: %s\n", status.errorMessage.get().c_str());
+			if (!status.errorMessages.empty()) {
+				printf("  Error: %s\n", status.errorMessages[0].c_str());
+				for (int i = 1; i < status.errorMessages.size(); ++i) {
+					printf("       : %s\n", status.errorMessages[i].c_str());
+				}
 			}
 		}
 	} catch (Error& e) {
@@ -2320,11 +2319,12 @@ ACTOR Future<Void> fetchAndDisplayDBMove(Database db,
 						printf("  Original prefix: %s\n", printable(movementInfo.sourcePrefix).c_str());
 					}
 				}
-				printf("  Movement state: %s\n\n",
+				printf("  Movement state: %s\n",
 				       TenantBalancerInterface::movementStateToString(movementInfo.movementState).c_str());
-				if (movementInfo.tenantMovementInfoError.present()) {
-					printf("  Error: %s\n", movementInfo.tenantMovementInfoError.get().what());
+				if (movementInfo.tenantMovementInfoErrorMessage.present()) {
+					printf("  Error: %s\n", movementInfo.tenantMovementInfoErrorMessage.get().c_str());
 				}
+				printf("\n");
 			}
 		}
 	} catch (Error& e) {

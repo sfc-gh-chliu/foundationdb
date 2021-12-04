@@ -205,7 +205,8 @@ struct TenantMovementInfo {
 	Key sourcePrefix;
 	Key destinationPrefix;
 	MovementState movementState;
-	Optional<Error> tenantMovementInfoError; // Error happens during acquiring variables inside the TenantMovementInfo
+	Optional<std::string> tenantMovementInfoErrorMessage; // A message of the error happens during acquiring variables
+	                                                      // inside the TenantMovementInfo
 
 	TenantMovementInfo() {}
 	TenantMovementInfo(UID movementId,
@@ -213,10 +214,10 @@ struct TenantMovementInfo {
 	                   Key sourcePrefix,
 	                   Key destinationPrefix,
 	                   MovementState movementState,
-	                   Optional<Error> tenantMovementInfoError = Optional<Error>())
+	                   Optional<std::string> tenantMovementInfoErrorMessage = Optional<std::string>())
 	  : movementId(movementId), peerConnectionString(peerConnectionString), sourcePrefix(sourcePrefix),
 	    destinationPrefix(destinationPrefix), movementState(movementState),
-	    tenantMovementInfoError(tenantMovementInfoError) {}
+	    tenantMovementInfoErrorMessage(tenantMovementInfoErrorMessage) {}
 
 	std::string toString() const;
 
@@ -228,7 +229,7 @@ struct TenantMovementInfo {
 		           sourcePrefix,
 		           destinationPrefix,
 		           movementState,
-		           tenantMovementInfoError);
+		           tenantMovementInfoErrorMessage);
 	}
 };
 
@@ -243,7 +244,7 @@ struct TenantMovementStatus {
 	Optional<double> mutationLag; // The number of seconds of lag between the current mutation on the source and the
 	                              // mutations being applied to the destination
 	Optional<Version> switchVersion;
-	Optional<std::string> errorMessage;
+	std::vector<std::string> errorMessages;
 
 	TenantMovementStatus() {}
 	std::string toJson() const;
@@ -259,7 +260,7 @@ struct TenantMovementStatus {
 		           databaseVersionLag,
 		           mutationLag,
 		           switchVersion,
-		           errorMessage);
+		           errorMessages);
 	}
 };
 
