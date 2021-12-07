@@ -150,10 +150,12 @@ public:
 
 	void setMovementError(const std::string& errorMessage) {
 		movementState = MovementState::ERROR;
-		errorMessages.emplace_back(errorMessage);
+		errorMessages.insert(errorMessage);
 	}
 
-	std::vector<std::string> getErrorMessages() const { return errorMessages; }
+	std::vector<std::string> getErrorMessages() const {
+		return std::vector(errorMessages.begin(), errorMessages.end());
+	}
 
 	void abort() const {
 		if (!abortPromise.isSet()) {
@@ -188,7 +190,7 @@ private:
 
 	std::string peerDatabaseName;
 	Database peerDatabase;
-	std::vector<std::string> errorMessages;
+	std::set<std::string> errorMessages;
 
 	Promise<Void> abortPromise;
 };
@@ -1360,16 +1362,18 @@ ACTOR Future<Void> getActiveMovements(TenantBalancer* self, GetActiveMovementsRe
 			} else {
 				newMovementState = drStateToMovementState(filteredMovements[i]->movementState, curBackupState.get());
 			}
-
+			std::vector<std::string> errorMessages = filteredMovements[i]->getErrorMessages();
+			if (curBackupState.isError()) {
+				errorMessages.emplace_back(
+				    format("Movement status is incomplete (%s)", curBackupState.getError().what()));
+			}
 			reply.activeMovements.emplace_back(
 			    filteredMovements[i]->getMovementId(),
 			    filteredMovements[i]->getPeerDatabase()->getConnectionRecord()->getConnectionString().toString(),
 			    filteredMovements[i]->getSourcePrefix(),
 			    filteredMovements[i]->getDestinationPrefix(),
 			    newMovementState.present() ? newMovementState.get().first : filteredMovements[i]->movementState,
-			    curBackupState.isError()
-			        ? format("Movement status is incomplete (%s)", curBackupState.getError().what())
-			        : Optional<std::string>());
+			    errorMessages);
 		}
 
 		TraceEvent(SevDebug, "TenantBalancerGetActiveMovementsComplete", self->tbi.id())
@@ -1496,7 +1500,6 @@ ACTOR Future<TenantMovementStatus> getStatusAndUpdateMovementRecord(TenantBalanc
 
 		std::string errorMessage = format("Movement status is incomplete (%s)", e.what());
 		record->setMovementError(errorMessage);
-		status.tenantMovementInfo.tenantMovementInfoErrorMessage = errorMessage;
 	} else {
 		updateMovementRecordWithDrState(self, record, &drStatus);
 		if (drStatus.secondsBehind != -1) {
@@ -1519,7 +1522,7 @@ ACTOR Future<TenantMovementStatus> getStatusAndUpdateMovementRecord(TenantBalanc
 		}
 	}
 
-	status.errorMessages = record->getErrorMessages();
+	status.tenantMovementInfo.errorMessages = record->getErrorMessages();
 	return status;
 }
 

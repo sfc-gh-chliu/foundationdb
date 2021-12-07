@@ -64,8 +64,9 @@ std::string TenantMovementStatus::toJson() const {
 	statusRoot.create("destinationPrefix") = printable(tenantMovementInfo.destinationPrefix);
 	statusRoot.create("movementState") =
 	    TenantBalancerInterface::movementStateToString(tenantMovementInfo.movementState);
-	if (tenantMovementInfo.tenantMovementInfoErrorMessage.present()) {
-		statusRoot.create("tenantMovementInfoError") = tenantMovementInfo.tenantMovementInfoErrorMessage.get();
+	if (!tenantMovementInfo.errorMessages.empty()) {
+		statusRoot.create("TenantMovementErrorMessages") =
+		    json_spirit::mArray(tenantMovementInfo.errorMessages.begin(), tenantMovementInfo.errorMessages.end());
 	}
 
 	// Insert movement status into JSON
@@ -79,10 +80,6 @@ std::string TenantMovementStatus::toJson() const {
 	}
 	if (switchVersion.present()) {
 		statusRoot.create("switchVersion") = switchVersion.get();
-	}
-	if (!errorMessages.empty()) {
-		statusRoot.create("TenantMovementStatusErrors") =
-		    json_spirit::mArray(errorMessages.begin(), errorMessages.end());
 	}
 	return json_spirit::write_string(statusRootValue);
 }

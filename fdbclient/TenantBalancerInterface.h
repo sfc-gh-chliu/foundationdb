@@ -205,8 +205,8 @@ struct TenantMovementInfo {
 	Key sourcePrefix;
 	Key destinationPrefix;
 	MovementState movementState;
-	Optional<std::string> tenantMovementInfoErrorMessage; // A message of the error happens during acquiring variables
-	                                                      // inside the TenantMovementInfo
+	std::vector<std::string> errorMessages; // Messages of the errors happen during acquiring variables
+	                                        // inside the TenantMovementInfo
 
 	TenantMovementInfo() {}
 	TenantMovementInfo(UID movementId,
@@ -214,22 +214,15 @@ struct TenantMovementInfo {
 	                   Key sourcePrefix,
 	                   Key destinationPrefix,
 	                   MovementState movementState,
-	                   Optional<std::string> tenantMovementInfoErrorMessage = Optional<std::string>())
+	                   std::vector<std::string> errorMessages = std::vector<std::string>())
 	  : movementId(movementId), peerConnectionString(peerConnectionString), sourcePrefix(sourcePrefix),
-	    destinationPrefix(destinationPrefix), movementState(movementState),
-	    tenantMovementInfoErrorMessage(tenantMovementInfoErrorMessage) {}
+	    destinationPrefix(destinationPrefix), movementState(movementState), errorMessages(errorMessages) {}
 
 	std::string toString() const;
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar,
-		           movementId,
-		           peerConnectionString,
-		           sourcePrefix,
-		           destinationPrefix,
-		           movementState,
-		           tenantMovementInfoErrorMessage);
+		serializer(ar, movementId, peerConnectionString, sourcePrefix, destinationPrefix, movementState, errorMessages);
 	}
 };
 
@@ -244,7 +237,6 @@ struct TenantMovementStatus {
 	Optional<double> mutationLag; // The number of seconds of lag between the current mutation on the source and the
 	                              // mutations being applied to the destination
 	Optional<Version> switchVersion;
-	std::vector<std::string> errorMessages;
 
 	TenantMovementStatus() {}
 	std::string toJson() const;
@@ -259,8 +251,7 @@ struct TenantMovementStatus {
 		           isDestinationLocked,
 		           databaseVersionLag,
 		           mutationLag,
-		           switchVersion,
-		           errorMessages);
+		           switchVersion);
 	}
 };
 

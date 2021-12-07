@@ -2224,10 +2224,10 @@ ACTOR Future<Void> statusDBMove(Database db, Key prefix, MovementLocation moveme
 			if (status.switchVersion.present()) {
 				printf("  Switch version: %lld\n", status.switchVersion.get());
 			}
-			if (!status.errorMessages.empty()) {
-				printf("  Error: %s\n", status.errorMessages[0].c_str());
-				for (int i = 1; i < status.errorMessages.size(); ++i) {
-					printf("       : %s\n", status.errorMessages[i].c_str());
+			if (!status.tenantMovementInfo.errorMessages.empty()) {
+				printf("  Error: %s\n", status.tenantMovementInfo.errorMessages[0].c_str());
+				for (int i = 1; i < status.tenantMovementInfo.errorMessages.size(); ++i) {
+					printf("       : %s\n", status.tenantMovementInfo.errorMessages[i].c_str());
 				}
 			}
 		}
@@ -2321,8 +2321,11 @@ ACTOR Future<Void> fetchAndDisplayDBMove(Database db,
 				}
 				printf("  Movement state: %s\n",
 				       TenantBalancerInterface::movementStateToString(movementInfo.movementState).c_str());
-				if (movementInfo.tenantMovementInfoErrorMessage.present()) {
-					printf("  Error: %s\n", movementInfo.tenantMovementInfoErrorMessage.get().c_str());
+				if (!movementInfo.errorMessages.empty()) {
+					printf("  Error: %s\n", movementInfo.errorMessages[0].c_str());
+					for (int i = 1; i < movementInfo.errorMessages.size(); ++i) {
+						printf("       : %s\n", movementInfo.errorMessages[i].c_str());
+					}
 				}
 				printf("\n");
 			}
