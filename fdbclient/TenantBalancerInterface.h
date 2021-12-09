@@ -205,8 +205,7 @@ struct TenantMovementInfo {
 	Key sourcePrefix;
 	Key destinationPrefix;
 	MovementState movementState;
-	std::vector<std::string> errorMessages; // Messages of the errors happen during acquiring variables
-	                                        // inside the TenantMovementInfo
+	std::vector<std::string> errorMessages;
 
 	TenantMovementInfo() {}
 	TenantMovementInfo(UID movementId,

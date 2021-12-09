@@ -65,7 +65,7 @@ std::string TenantMovementStatus::toJson() const {
 	statusRoot.create("movementState") =
 	    TenantBalancerInterface::movementStateToString(tenantMovementInfo.movementState);
 	if (!tenantMovementInfo.errorMessages.empty()) {
-		statusRoot.create("TenantMovementErrorMessages") =
+		statusRoot.create("errors") =
 		    json_spirit::mArray(tenantMovementInfo.errorMessages.begin(), tenantMovementInfo.errorMessages.end());
 	}
 
