@@ -205,21 +205,23 @@ struct TenantMovementInfo {
 	Key sourcePrefix;
 	Key destinationPrefix;
 	MovementState movementState;
+	std::vector<std::string> errorMessages;
 
 	TenantMovementInfo() {}
 	TenantMovementInfo(UID movementId,
 	                   std::string peerConnectionString,
 	                   Key sourcePrefix,
 	                   Key destinationPrefix,
-	                   MovementState movementState)
+	                   MovementState movementState,
+	                   std::vector<std::string> errorMessages = std::vector<std::string>())
 	  : movementId(movementId), peerConnectionString(peerConnectionString), sourcePrefix(sourcePrefix),
-	    destinationPrefix(destinationPrefix), movementState(movementState) {}
+	    destinationPrefix(destinationPrefix), movementState(movementState), errorMessages(errorMessages) {}
 
 	std::string toString() const;
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, movementId, peerConnectionString, sourcePrefix, destinationPrefix, movementState);
+		serializer(ar, movementId, peerConnectionString, sourcePrefix, destinationPrefix, movementState, errorMessages);
 	}
 };
 
@@ -234,7 +236,6 @@ struct TenantMovementStatus {
 	Optional<double> mutationLag; // The number of seconds of lag between the current mutation on the source and the
 	                              // mutations being applied to the destination
 	Optional<Version> switchVersion;
-	Optional<std::string> errorMessage;
 
 	TenantMovementStatus() {}
 	std::string toJson() const;
@@ -249,8 +250,7 @@ struct TenantMovementStatus {
 		           isDestinationLocked,
 		           databaseVersionLag,
 		           mutationLag,
-		           switchVersion,
-		           errorMessage);
+		           switchVersion);
 	}
 };
 
@@ -345,12 +345,12 @@ struct FinishSourceMovementRequest {
 	constexpr static FileIdentifier file_identifier = 10934711;
 
 	Key sourcePrefix;
-	double maxLagSeconds;
+	Optional<double> maxLagSeconds;
 
 	ReplyPromise<FinishSourceMovementReply> reply;
 
 	FinishSourceMovementRequest() {}
-	FinishSourceMovementRequest(Key sourcePrefix, double maxLagSeconds)
+	FinishSourceMovementRequest(Key sourcePrefix, Optional<double> maxLagSeconds)
 	  : sourcePrefix(sourcePrefix), maxLagSeconds(maxLagSeconds) {}
 
 	template <class Ar>
@@ -378,16 +378,22 @@ struct FinishDestinationMovementRequest {
 	UID movementId;
 	Key destinationPrefix;
 	Version version;
+	Optional<double> maxLagSeconds;
 
 	ReplyPromise<FinishDestinationMovementReply> reply;
 
 	FinishDestinationMovementRequest() : version(invalidVersion) {}
 	FinishDestinationMovementRequest(UID movementId, Key destinationPrefix, Version version)
 	  : movementId(movementId), destinationPrefix(destinationPrefix), version(version) {}
+	FinishDestinationMovementRequest(UID movementId,
+	                                 Key destinationPrefix,
+	                                 Version version,
+	                                 Optional<double> maxLagSeconds)
+	  : movementId(movementId), destinationPrefix(destinationPrefix), version(version), maxLagSeconds(maxLagSeconds) {}
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, movementId, destinationPrefix, version, reply);
+		serializer(ar, movementId, destinationPrefix, version, maxLagSeconds, reply);
 	}
 };
 

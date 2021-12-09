@@ -727,6 +727,7 @@ public:
 
 	// Tenant Balancer
 	double TENANT_BALANCER_MOVEMENT_RECOVERY_TIMEOUT;
+	double TENANT_BALANCER_OPERATION_TIMEOUT;
 
 	// blob granule stuff
 	// FIXME: configure url with database configuration instead of knob eventually

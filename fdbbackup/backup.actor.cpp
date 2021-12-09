@@ -1506,7 +1506,7 @@ static void printDBBackupUsage(bool devhelp) {
 // TODO: need to update the usage describtion here
 static void printDBMovementUsage(bool devhelp) {
 	printf("FoundationDB " FDB_VT_PACKAGE_NAME " (v" FDB_VT_VERSION ")\n");
-	printf("Usage: %s [TOP_LEVEL_OPTIONS] (start | status | finish | abort | cleanup | clear | list) [OPTIONS]\n\n",
+	printf("Usage: %s [TOP_LEVEL_OPTIONS] (start | status | finish | abort | clean | list) [OPTIONS]\n\n",
 	       exeDatabaseMovement.toString().c_str());
 
 	printf(" TOP LEVEL OPTIONS:\n");
@@ -2200,7 +2200,6 @@ ACTOR Future<TenantMovementStatus> getMovementStatus(Database database, Key pref
 ACTOR Future<Void> statusDBMove(Database db, Key prefix, MovementLocation movementLocation, bool json = false) {
 	try {
 		state TenantMovementStatus status = wait(getMovementStatus(db, prefix, movementLocation));
-
 		if (json) {
 			printf("%s\n", status.toJson().c_str());
 		} else {
@@ -2225,8 +2224,11 @@ ACTOR Future<Void> statusDBMove(Database db, Key prefix, MovementLocation moveme
 			if (status.switchVersion.present()) {
 				printf("  Switch version: %lld\n", status.switchVersion.get());
 			}
-			if (status.errorMessage.present()) {
-				printf("  Error: %s\n", status.errorMessage.get().c_str());
+			if (!status.tenantMovementInfo.errorMessages.empty()) {
+				printf("  Error: %s\n", status.tenantMovementInfo.errorMessages[0].c_str());
+				for (int i = 1; i < status.tenantMovementInfo.errorMessages.size(); ++i) {
+					printf("       : %s\n", status.tenantMovementInfo.errorMessages[i].c_str());
+				}
 			}
 		}
 	} catch (Error& e) {
@@ -2298,26 +2300,34 @@ ACTOR Future<Void> fetchAndDisplayDBMove(Database db,
 				printf("There are %d active movements:\n\n", activeMovements.size());
 			}
 			for (int i = 0; i < activeMovements.size(); ++i) {
-				printf("%d. %s\n", i + 1, activeMovements[i].movementId.toString().c_str());
+				const auto& movementInfo = activeMovements[i];
+				printf("%d. %s\n", i + 1, movementInfo.movementId.toString().c_str());
 				if (locationFilter == MovementLocation::SOURCE) {
-					printf("  Prefix: %s\n", printable(activeMovements[i].sourcePrefix).c_str());
+					printf("  Prefix: %s\n", printable(movementInfo.sourcePrefix).c_str());
 					if (!peerDatabaseConnectionStringFilter.present()) {
-						printf("  Destination cluster: %s\n", activeMovements[i].peerConnectionString.c_str());
+						printf("  Destination cluster: %s\n", movementInfo.peerConnectionString.c_str());
 					}
-					if (activeMovements[i].destinationPrefix != activeMovements[i].sourcePrefix) {
-						printf("  Replacement prefix: %s\n", printable(activeMovements[i].destinationPrefix).c_str());
+					if (movementInfo.destinationPrefix != movementInfo.sourcePrefix) {
+						printf("  Replacement prefix: %s\n", printable(movementInfo.destinationPrefix).c_str());
 					}
 				} else {
-					printf("  Prefix: %s\n", printable(activeMovements[i].destinationPrefix).c_str());
+					printf("  Prefix: %s\n", printable(movementInfo.destinationPrefix).c_str());
 					if (!peerDatabaseConnectionStringFilter.present()) {
-						printf("  Source cluster: %s\n", activeMovements[i].peerConnectionString.c_str());
+						printf("  Source cluster: %s\n", movementInfo.peerConnectionString.c_str());
 					}
-					if (activeMovements[i].destinationPrefix != activeMovements[i].sourcePrefix) {
-						printf("  Original prefix: %s\n", printable(activeMovements[i].sourcePrefix).c_str());
+					if (movementInfo.destinationPrefix != movementInfo.sourcePrefix) {
+						printf("  Original prefix: %s\n", printable(movementInfo.sourcePrefix).c_str());
 					}
 				}
-				printf("  Movement state: %s\n\n",
-				       TenantBalancerInterface::movementStateToString(activeMovements[i].movementState).c_str());
+				printf("  Movement state: %s\n",
+				       TenantBalancerInterface::movementStateToString(movementInfo.movementState).c_str());
+				if (!movementInfo.errorMessages.empty()) {
+					printf("  Error: %s\n", movementInfo.errorMessages[0].c_str());
+					for (int i = 1; i < movementInfo.errorMessages.size(); ++i) {
+						printf("       : %s\n", movementInfo.errorMessages[i].c_str());
+					}
+				}
+				printf("\n");
 			}
 		}
 	} catch (Error& e) {
@@ -2345,12 +2355,25 @@ ACTOR Future<Void> listDBMove(Database src, Database dest) {
 ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> maxLagSeconds) {
 	try {
 		// Send request to source cluster
-		state FinishSourceMovementRequest finishSourceMovementRequest(srcPrefix, maxLagSeconds.orDefault(DBL_MAX));
+		state FinishSourceMovementRequest finishSourceMovementRequest(srcPrefix, maxLagSeconds);
 		state Future<ErrorOr<FinishSourceMovementReply>> finishSourceMovementReply = Never();
 		state Future<Void> initialize = Void();
+		state double timeoutLimit;
+		if (maxLagSeconds.present()) {
+			timeoutLimit = maxLagSeconds.get();
+		} else {
+			state TenantMovementStatus status = wait(getMovementStatus(src, srcPrefix, MovementLocation::SOURCE));
+			if (!status.mutationLag.present()) {
+				fprintf(stderr, "ERROR: The movement is not ready to be finished.\n");
+				return Void();
+			}
+			timeoutLimit = status.mutationLag.get();
+		}
+
 		loop choose {
 			when(ErrorOr<FinishSourceMovementReply> reply =
-			         wait(timeoutError(finishSourceMovementReply, CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT))) {
+			         wait(timeoutError(finishSourceMovementReply,
+			                           std::max(2 * timeoutLimit, CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT)))) {
 				if (reply.isError()) {
 					throw reply.getError();
 				}
@@ -4473,10 +4496,8 @@ int main(int argc, char* argv[]) {
 				char* param = args->OptionArg();
 				char* end = nullptr;
 				double parseResult = std::strtod(param, &end);
-				if (end != nullptr || parseResult == 0) {
-					std::string errorMessage =
-					    end != nullptr ? "max lag seconds parameter parsing error" : "max lag seconds illegal";
-					fprintf(stderr, "ERROR: %s `%s'\n", errorMessage.c_str(), param);
+				if (*end != 0) {
+					fprintf(stderr, "ERROR: max lag seconds illegal `%s'\n", param);
 					printHelpTeaser(argv[0]);
 					return FDB_EXIT_ERROR;
 				}
