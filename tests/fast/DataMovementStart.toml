@@ -2,11 +2,8 @@
 extraDB = 1
 
 [[test]]
-testTitle = 'DataMovementStart'
+testTitle = 'DataMovementBetweenClusters'
 clearAfterTest = false
 
     [[test.workload]]
     testName = 'DataMovementStart'
-    backupAfter = 10.0
-    restoreAfter = 60.0
-    backupRangesCount = -1

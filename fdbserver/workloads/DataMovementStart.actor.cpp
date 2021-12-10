@@ -1,5 +1,5 @@
 /*
- * DataMovementAbort.actor.cpp
+ * DataMovementStart.actor.cpp
  *
  * This source file is part of the FoundationDB open source project
  *
@@ -22,205 +22,91 @@
 #include "fdbclient/FDBTypes.h"
 #include "fdbclient/TenantBalancerInterface.h"
 #include "fdbserver/workloads/workloads.actor.h"
-#include "flow/actorcompiler.h" // This must be the last #include.
 #include "flow/flow.h"
 #include <string>
+#include "flow/actorcompiler.h" // This must be the last #include.
 
-// Functions copied from backup.actor.cpp file
-ACTOR Future<Void> submitDBMove(Database src, Database dest, Key srcPrefix, Key destPrefix) {
-	try {
-		state MoveTenantToClusterRequest srcRequest(
-		    srcPrefix, destPrefix, dest->getConnectionRecord()->getConnectionString().toString());
+ACTOR template <class Request>
+Future<REPLY_TYPE(Request)> sendTenantBalancerRequest(Database peerDb,
+                                                      Request request,
+                                                      RequestStream<Request> TenantBalancerInterface::*stream) {
+	state Future<ErrorOr<REPLY_TYPE(Request)>> replyFuture = Never();
+	state Future<Void> initialize = Void();
 
-		state Future<ErrorOr<MoveTenantToClusterReply>> replyFuture = Never();
-		state Future<Void> initialize = Void();
-
-		loop choose {
-			when(ErrorOr<MoveTenantToClusterReply> reply =
-			         wait(timeoutError(replyFuture, CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT))) {
-				if (reply.isError()) {
-					throw reply.getError();
-				}
-				break;
+	loop choose {
+		when(ErrorOr<REPLY_TYPE(Request)> reply = wait(replyFuture)) {
+			if (reply.isError()) {
+				throw reply.getError();
 			}
-			when(wait(src->onTenantBalancerChanged() || initialize)) {
-				initialize = Never();
-				replyFuture = src->getTenantBalancer().present()
-				                  ? src->getTenantBalancer().get().moveTenantToCluster.tryGetReply(srcRequest)
-				                  : Never();
-			}
+			return reply.get();
 		}
-
-		printf("The data movement was successfully submitted.\n");
-	} catch (Error& e) {
-		// TODO This list of errors may change
-		if (e.code() == error_code_actor_cancelled)
-			throw;
-
-		fprintf(stderr, "ERROR: %s\n", e.what());
+		when(wait(peerDb->onTenantBalancerChanged() || initialize)) {
+			initialize = Never();
+			replyFuture = peerDb->getTenantBalancer().present()
+			                  ? (peerDb->getTenantBalancer().get().*stream).tryGetReply(request)
+			                  : Never();
+		}
 	}
+}
 
+ACTOR Future<Void> submitDBMove(Database src, Database dest, Key srcPrefix, Key destPrefix) {
+	wait(sendTenantBalancerRequest(
+	    src,
+	    MoveTenantToClusterRequest(
+	        srcPrefix, destPrefix, dest->getConnectionRecord()->getConnectionString().toString()),
+	    &TenantBalancerInterface::moveTenantToCluster));
 	return Void();
 }
 
 ACTOR Future<TenantMovementStatus> getMovementStatus(Database database, Key prefix, MovementLocation movementLocation) {
-	state GetMovementStatusRequest getMovementStatusRequest(prefix, movementLocation);
-	state Future<ErrorOr<GetMovementStatusReply>> getMovementStatusReply = Never();
-	state Future<Void> initialize = Void();
-	loop choose {
-		when(ErrorOr<GetMovementStatusReply> reply =
-		         wait(timeoutError(getMovementStatusReply, CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT))) {
-			if (reply.isError()) {
-				throw reply.getError();
-			}
-			return reply.get().movementStatus;
-		}
-		when(wait(database->onTenantBalancerChanged() || initialize)) {
-			initialize = Never();
-			getMovementStatusReply =
-			    database->getTenantBalancer().present()
-			        ? database->getTenantBalancer().get().getMovementStatus.tryGetReply(getMovementStatusRequest)
-			        : Never();
-		}
-	}
+	state GetMovementStatusReply reply = wait(sendTenantBalancerRequest(
+	    database, GetMovementStatusRequest(prefix, movementLocation), &TenantBalancerInterface::getMovementStatus));
+	return reply.movementStatus;
 }
 
-ACTOR Future<std::vector<TenantMovementInfo>> getActiveMovements(
-    Database database,
-    Optional<std::string> peerDatabaseConnectionStringFilter,
-    Optional<MovementLocation> locationFilter) {
-	state GetActiveMovementsRequest getActiveMovementsRequest(
-	    Optional<Key>(), peerDatabaseConnectionStringFilter, locationFilter);
-	state Future<ErrorOr<GetActiveMovementsReply>> getActiveMovementsReply = Never();
-	state Future<Void> initialize = Void();
-	loop choose {
-		when(ErrorOr<GetActiveMovementsReply> reply =
-		         wait(timeoutError(getActiveMovementsReply, CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT))) {
-			if (reply.isError()) {
-				throw reply.getError();
-			}
-			return reply.get().activeMovements;
-		}
-		when(wait(database->onTenantBalancerChanged() || initialize)) {
-			initialize = Never();
-			getActiveMovementsReply =
-			    database->getTenantBalancer().present()
-			        ? database->getTenantBalancer().get().getActiveMovements.tryGetReply(getActiveMovementsRequest)
-			        : Never();
-		}
-	}
-}
-
-ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> maxLagSeconds) {
-	try {
-		// Send request to source cluster
-		state FinishSourceMovementRequest finishSourceMovementRequest(srcPrefix, maxLagSeconds);
-		state Future<ErrorOr<FinishSourceMovementReply>> finishSourceMovementReply = Never();
-		state Future<Void> initialize = Void();
-		state double timeoutLimit;
-		if (maxLagSeconds.present()) {
-			timeoutLimit = maxLagSeconds.get();
-		} else {
-			state TenantMovementStatus status = wait(getMovementStatus(src, srcPrefix, MovementLocation::SOURCE));
-			if (!status.mutationLag.present()) {
-				fprintf(stderr, "ERROR: The movement is not ready to be finished.\n");
-				return Void();
-			}
-			timeoutLimit = status.mutationLag.get();
-		}
-
-		loop choose {
-			when(ErrorOr<FinishSourceMovementReply> reply =
-			         wait(timeoutError(finishSourceMovementReply,
-			                           std::max(2 * timeoutLimit, CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT)))) {
-				if (reply.isError()) {
-					throw reply.getError();
-				}
-				break;
-			}
-			when(wait(src->onTenantBalancerChanged() || initialize)) {
-				initialize = Never();
-				finishSourceMovementReply =
-				    src->getTenantBalancer().present()
-				        ? src->getTenantBalancer().get().finishSourceMovement.tryGetReply(finishSourceMovementRequest)
-				        : Never();
-			}
-		}
-		printf("The data movement was successfully finished.\n");
-	} catch (Error& e) {
-		if (e.code() == error_code_actor_cancelled)
-			throw;
-
-		fprintf(stderr, "ERROR: %s\n", e.what());
-	}
-
-	return Void();
-}
-
-ACTOR Future<Void> insertSingleData(const Database& database, KeyRef key, ValueRef value) {
-	state Reference<ReadYourWritesTransaction> tr = makeReference<ReadYourWritesTransaction>(database);
-	loop {
-		try {
-			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
-			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
-			tr->set(key, value);
-			wait(tr->commit());
-		} catch (Error& e) {
-			TraceEvent(SevDebug, "InsertTestDataError").error(e);
-
-			wait(tr->onError(e));
-		}
-	}
-	return Void();
-}
-
-ACTOR Future<Optional<Value>> retrieveSingleData(const Database& database, Key key) {
-	state Reference<ReadYourWritesTransaction> tr = makeReference<ReadYourWritesTransaction>(database);
-	loop {
-		try {
-			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
-			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
-			Optional<Value> value = wait(tr->get(key));
-			return value;
-		} catch (Error& e) {
-			TraceEvent(SevDebug, "InsertTestDataError").error(e);
-
-			wait(tr->onError(e));
-		}
-	}
+ACTOR Future<Void> finishDBMove(Database database, Key prefix, Optional<double> maxLagSeconds) {
+	wait(sendTenantBalancerRequest(
+	    database, FinishSourceMovementRequest(prefix, maxLagSeconds), &TenantBalancerInterface::finishSourceMovement));
 	return Void();
 }
 
 ACTOR Future<Void> cleanupDBMove(Database src, Key srcPrefix, CleanupMovementSourceRequest::CleanupType cleanupType) {
-	try {
-		state CleanupMovementSourceRequest cleanupMovementSourceRequest(srcPrefix, cleanupType);
-		state Future<ErrorOr<CleanupMovementSourceReply>> cleanupMovementSourceReply = Never();
-		state Future<Void> initialize = Void();
-		loop choose {
-			when(ErrorOr<CleanupMovementSourceReply> reply =
-			         wait(timeoutError(cleanupMovementSourceReply, CLIENT_KNOBS->TENANT_BALANCER_REQUEST_TIMEOUT))) {
-				if (reply.isError()) {
-					throw reply.getError();
-				}
-				break;
-			}
-			when(wait(src->onTenantBalancerChanged() || initialize)) {
-				initialize = Never();
-				cleanupMovementSourceReply =
-				    src->getTenantBalancer().present()
-				        ? src->getTenantBalancer().get().cleanupMovementSource.tryGetReply(cleanupMovementSourceRequest)
-				        : Never();
-			}
-		}
-		printf("The data movement on %s was successfully cleaned up.\n",
-		       src->getConnectionRecord()->getConnectionString().toString().c_str());
-	} catch (Error& e) {
-		if (e.code() == error_code_actor_cancelled)
-			throw;
-		fprintf(stderr, "ERROR: %s\n", e.what());
-	}
-
+	wait(sendTenantBalancerRequest(
+	    src, CleanupMovementSourceRequest(srcPrefix, cleanupType), &TenantBalancerInterface::cleanupMovementSource));
 	return Void();
+}
+
+ACTOR
+template <class Result>
+Future<Result> runTransaction(const Database& database,
+                              std::function<Future<Result>(Reference<ReadYourWritesTransaction>)> func) {
+	state Reference<ReadYourWritesTransaction> tr = makeReference<ReadYourWritesTransaction>(database);
+	state Result result;
+	loop {
+		try {
+			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
+			result = wait(func(tr));
+			return result;
+		} catch (Error& e) {
+			TraceEvent(SevDebug, "InsertTestDataError").error(e);
+			wait(tr->onError(e));
+		}
+	}
+}
+
+ACTOR Future<Void> insertSingleData(const Database& database, Key key, Value value) {
+	wait(runTransaction<Void>(database, [key, value](Reference<ReadYourWritesTransaction> tr) {
+		tr->set(key, value);
+		return tr->commit();
+	}));
+	return Void();
+}
+
+ACTOR Future<Optional<Value>> retrieveSingleData(const Database& database, Key key) {
+	Optional<Value> value = wait(runTransaction<Optional<Value>>(
+	    database, [key](Reference<ReadYourWritesTransaction> tr) { return tr->get(key); }));
+	return value;
 }
 
 struct DataMovementStart : TestWorkload {
@@ -239,7 +125,7 @@ struct DataMovementStart : TestWorkload {
 		std::vector<std::string> prefixes{ "a", "b", "c" };
 
 		for (const auto& prefix : prefixes) {
-			insertSingleData(database, KeyRef(prefix + dummy + "key"), ValueRef(prefix + dummy + "val"));
+			insertSingleData(database, Key(prefix + dummy + "key"), Value(prefix + dummy + "val"));
 		}
 		return Void();
 	}
@@ -270,23 +156,20 @@ struct DataMovementStart : TestWorkload {
 		wait(submitDBMove(cx, self->extraDB, targetPrefix, targetPrefix));
 
 		// status
-		state TenantMovementStatus srcStatus = wait(getMovementStatus(cx, targetPrefix, MovementLocation::SOURCE));
 		state TenantMovementStatus destStatus =
 		    wait(getMovementStatus(self->extraDB, targetPrefix, MovementLocation::DEST));
-
-		// list
-		state std::vector<TenantMovementInfo> activeSrcMovements = wait(getActiveMovements(
-		    cx, self->extraDB->getConnectionRecord()->getConnectionString().toString(), MovementLocation::SOURCE));
-		state std::vector<TenantMovementInfo> activeDestMovements =
-		    wait(getActiveMovements(self->extraDB,
-		                            self->extraDB->getConnectionRecord()->getConnectionString().toString(),
-		                            MovementLocation::DEST));
+		for (;;) {
+			state TenantMovementStatus srcStatus = wait(getMovementStatus(cx, targetPrefix, MovementLocation::SOURCE));
+			if (srcStatus.mutationLag.present() && srcStatus.mutationLag.get() < 1) {
+				break;
+			}
+		}
 
 		// finish
-		finishDBMove(cx, targetPrefix, 3.0);
+		wait(finishDBMove(cx, targetPrefix, 3.0));
 
 		// clean
-		cleanupDBMove(cx, targetPrefix, CleanupMovementSourceRequest::CleanupType::ERASE_AND_UNLOCK);
+		wait(cleanupDBMove(cx, targetPrefix, CleanupMovementSourceRequest::CleanupType::ERASE_AND_UNLOCK));
 
 		return Void();
 	}
