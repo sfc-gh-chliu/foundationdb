@@ -157,6 +157,40 @@ ACTOR Future<Void> finishDBMove(Database src, Key srcPrefix, Optional<double> ma
 	return Void();
 }
 
+ACTOR Future<Void> insertSingleData(const Database& database, KeyRef key, ValueRef value) {
+	state Reference<ReadYourWritesTransaction> tr = makeReference<ReadYourWritesTransaction>(database);
+	loop {
+		try {
+			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
+			tr->set(key, value);
+			wait(tr->commit());
+		} catch (Error& e) {
+			TraceEvent(SevDebug, "InsertTestDataError").error(e);
+
+			wait(tr->onError(e));
+		}
+	}
+	return Void();
+}
+
+ACTOR Future<Optional<Value>> retrieveSingleData(const Database& database, Key key) {
+	state Reference<ReadYourWritesTransaction> tr = makeReference<ReadYourWritesTransaction>(database);
+	loop {
+		try {
+			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
+			Optional<Value> value = wait(tr->get(key));
+			return value;
+		} catch (Error& e) {
+			TraceEvent(SevDebug, "InsertTestDataError").error(e);
+
+			wait(tr->onError(e));
+		}
+	}
+	return Void();
+}
+
 ACTOR Future<Void> cleanupDBMove(Database src, Key srcPrefix, CleanupMovementSourceRequest::CleanupType cleanupType) {
 	try {
 		state CleanupMovementSourceRequest cleanupMovementSourceRequest(srcPrefix, cleanupType);
@@ -189,95 +223,111 @@ ACTOR Future<Void> cleanupDBMove(Database src, Key srcPrefix, CleanupMovementSou
 	return Void();
 }
 
-struct DataMovementStart: TestWorkload{
-    Database extraDB;
+struct DataMovementStart : TestWorkload {
+	Database extraDB;
 
-    explicit DataMovementStart(const WorkloadContext& wcx) : TestWorkload(wcx) {
-        auto extraFile = makeReference<ClusterConnectionMemoryRecord>(*g_simulator.extraDB);
-        extraDB = Database::createDatabase(extraFile, -1);
+	explicit DataMovementStart(const WorkloadContext& wcx) : TestWorkload(wcx) {
+		auto extraFile = makeReference<ClusterConnectionMemoryRecord>(*g_simulator.extraDB);
+		extraDB = Database::createDatabase(extraFile, -1);
 	}
 
-    std::string description() const override { return "DataMovementStart"; }
+	std::string description() const override { return "DataMovementStart"; }
 
-    ACTOR static Future<Void> insertSingleTestData(Reference<ReadYourWritesTransaction> tr,KeyRef key,ValueRef value){
-        loop {
-            try {
-                tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
-                tr->setOption(FDBTransactionOptions::LOCK_AWARE);
-                tr->set(key, value);
-                wait(tr->commit());
-            } catch (Error& e) {
-                TraceEvent(SevDebug, "InsertTestDataError")
-                    .error(e);
+	ACTOR static Future<Void> insertTestData(const Database& database) {
+		state Reference<ReadYourWritesTransaction> tr = makeReference<ReadYourWritesTransaction>(database);
+		std::string dummy = "test";
+		std::vector<std::string> prefixes{ "a", "b", "c" };
 
-                wait(tr->onError(e));
-            }
-        }
-        return Void();
-    }
-
-    ACTOR static Future<Void> insertSingleTestData(const Database& database,KeyRef key,ValueRef value){
-        state Reference<ReadYourWritesTransaction> tr = makeReference<ReadYourWritesTransaction>(database);
-        return insertSingleTestData(tr,key,value);
-    }
-
-    ACTOR static Future<Void> insertTestData(const Database& database){
-        state Reference<ReadYourWritesTransaction> tr = makeReference<ReadYourWritesTransaction>(database);
-        std::string dummy = "test";
-        std::vector<std::string> prefixes{"a","b","c"};
-
-        for(const auto& prefix:prefixes){
-            insertSingleTestData(tr,KeyRef(prefix+dummy+"key"), ValueRef(prefix+dummy+"val"));
-        }
-        return Void();
-    }
-
-    Future<Void> setup(const Database& cx) override {
-        if (clientId != 0)
-			return Void();
-        return _setup(this, cx);
+		for (const auto& prefix : prefixes) {
+			insertSingleData(database, KeyRef(prefix + dummy + "key"), ValueRef(prefix + dummy + "val"));
+		}
+		return Void();
 	}
 
-    ACTOR static Future<Void> _setup(DataMovementStart* self, Database cx) {
-        wait(insertTestData(cx));
-        return Void();
-    }
-
-    Future<Void> start(Database const& cx) override {
+	Future<Void> setup(const Database& cx) override {
 		if (clientId != 0)
 			return Void();
-        return _start(this, cx);
+		return _setup(this, cx);
 	}
 
-    ACTOR static Future<Void> _start(DataMovementStart* self, Database cx) {
-        //go though start->status->list->finish->clean
-        std::string targetPrefixStr = "a";
-        Key targetPrefix(targetPrefixStr);
+	ACTOR static Future<Void> _setup(DataMovementStart* self, Database cx) {
+		wait(insertTestData(cx));
+		return Void();
+	}
 
-        //start
-        wait(submitDBMove(cx,self->extraDB,targetPrefix,targetPrefix));
+	Future<Void> start(Database const& cx) override {
+		if (clientId != 0)
+			return Void();
+		return _start(this, cx);
+	}
 
-        //status
-        state TenantMovementStatus srcStatus = wait(getMovementStatus(cx, targetPrefix, MovementLocation::SOURCE));
-        state TenantMovementStatus destStatus = wait(getMovementStatus(self->extraDB, targetPrefix, MovementLocation::DEST));
+	ACTOR static Future<Void> _start(DataMovementStart* self, Database cx) {
+		// go though start->status->list->finish->clean
+		std::string targetPrefixStr = "a";
+		Key targetPrefix(targetPrefixStr);
 
-        //list
-        state std::vector<TenantMovementInfo> activeSrcMovements =
-		    wait(getActiveMovements(cx, self->extraDB->getConnectionRecord()->getConnectionString().toString(), MovementLocation::SOURCE));
-        state std::vector<TenantMovementInfo> activeDestMovements =
-		    wait(getActiveMovements(self->extraDB, self->extraDB->getConnectionRecord()->getConnectionString().toString(), MovementLocation::DEST));
-        
-        //finish
-        finishDBMove(cx, targetPrefix, 3.0);
+		// start
+		wait(submitDBMove(cx, self->extraDB, targetPrefix, targetPrefix));
 
-        //clean
-        cleanupDBMove(cx, targetPrefix, CleanupMovementSourceRequest::CleanupType::ERASE_AND_UNLOCK);
+		// status
+		state TenantMovementStatus srcStatus = wait(getMovementStatus(cx, targetPrefix, MovementLocation::SOURCE));
+		state TenantMovementStatus destStatus =
+		    wait(getMovementStatus(self->extraDB, targetPrefix, MovementLocation::DEST));
 
-        return Void();
-    }
+		// list
+		state std::vector<TenantMovementInfo> activeSrcMovements = wait(getActiveMovements(
+		    cx, self->extraDB->getConnectionRecord()->getConnectionString().toString(), MovementLocation::SOURCE));
+		state std::vector<TenantMovementInfo> activeDestMovements =
+		    wait(getActiveMovements(self->extraDB,
+		                            self->extraDB->getConnectionRecord()->getConnectionString().toString(),
+		                            MovementLocation::DEST));
 
-    ACTOR static Future<bool> _check(DataMovementStart* self, Database cx) {
+		// finish
+		finishDBMove(cx, targetPrefix, 3.0);
+
+		// clean
+		cleanupDBMove(cx, targetPrefix, CleanupMovementSourceRequest::CleanupType::ERASE_AND_UNLOCK);
+
+		return Void();
+	}
+
+	ACTOR static Future<bool> _check(DataMovementStart* self, Database db) {
 		// check result
+		// expected result: db doesn't have atestkey, extraDb has it. They both have btestkey and ctestkey.
+
+		// For prefix a
+		state std::string aKeyStr = "atestkey";
+		Optional<Value> aValueDB = wait(retrieveSingleData(db, Key(aKeyStr)));
+		if (aValueDB.present()) {
+			return false;
+		}
+		Optional<Value> aValueExtra = wait(retrieveSingleData(self->extraDB, Key(aKeyStr)));
+		if (!aValueExtra.present() || aValueExtra.get().toString() != "atestkey") {
+			return false;
+		}
+
+		// For prefix b
+		state std::string bKeyStr = "btestkey";
+		Optional<Value> bValueDB = wait(retrieveSingleData(db, Key(bKeyStr)));
+		if (!bValueDB.present() || bValueDB.get().toString() != "btestkey") {
+			return false;
+		}
+		Optional<Value> bValueExtra = wait(retrieveSingleData(self->extraDB, Key(bKeyStr)));
+		if (bValueExtra.present()) {
+			return false;
+		}
+
+		// For prefix c
+		std::string cKeyStr = "ctestkey";
+		Optional<Value> cValueDB = wait(retrieveSingleData(db, Key(cKeyStr)));
+		if (!cValueDB.present() || cValueDB.get().toString() != "ctestkey") {
+			return false;
+		}
+		Optional<Value> cValueExtra = wait(retrieveSingleData(self->extraDB, Key(cKeyStr)));
+		if (!cValueExtra.present()) {
+			return false;
+		}
+
 		return true;
 	}
 
