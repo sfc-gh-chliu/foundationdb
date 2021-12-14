@@ -1091,12 +1091,26 @@ int run_workload(FDBTransaction* transaction,
 
 	clock_gettime(CLOCK_MONOTONIC_COARSE, &timer_prev);
 
+	// Used to refresh the random part in the keystr
+	int prefix_change_interval = 10; //ms
+	struct timespec timer_last_refresh;
+	clock_gettime(CLOCK_MONOTONIC_COARSE, &timer_last_refresh);
+
 	/* main transaction loop */
 	while (1) {
 
 		if (((thread_tps > 0) && (xacts >= current_tps)) /* throttle on */ || dotrace /* transaction tracing on */) {
 
 			clock_gettime(CLOCK_MONOTONIC_COARSE, &timer_now);
+
+			// Every 10 milliseconds
+			if((timer_now.tv_sec == timer_last_refresh.tv_sec && timer_now.tv_nsec-timer_last_refresh.tv_nsec>=1000000*prefix_change_interval) ||
+			(timer_now.tv_sec-timer_last_refresh.tv_sec)*1000000000+timer_now.tv_nsec-timer_last_refresh.tv_nsec>=1000000*prefix_change_interval){
+				updateKeyPrefix(keystr,KEYPREFIXLEN,args->prefixpadding,args->key_length + 1);
+				timer_last_refresh.tv_sec = timer_now.tv_sec;
+				timer_last_refresh.tv_nsec = timer_now.tv_nsec;
+			}
+
 			if ((timer_now.tv_sec > timer_prev.tv_sec + 1) ||
 			    ((timer_now.tv_sec == timer_prev.tv_sec + 1) && (timer_now.tv_nsec > timer_prev.tv_nsec))) {
 				/* more than 1 second passed, no need to throttle */
