@@ -1112,7 +1112,7 @@ int run_workload(FDBTransaction* transaction,
 
 	// Used to refresh the random part in the keystr
 	char* randomPrefix = (char*)malloc(sizeof(char) * args->prefixlen + 1);
-	int prefix_change_interval = 10; // ms
+	memcpy(randomPrefix, KEYPREFIX, KEYPREFIXLEN);
 	struct timespec timer_last_refresh;
 	clock_gettime(CLOCK_MONOTONIC_COARSE, &timer_last_refresh);
 
@@ -1126,7 +1126,7 @@ int run_workload(FDBTransaction* transaction,
 			// Every 10 milliseconds
 			if ((timer_now.tv_sec - timer_last_refresh.tv_sec) * 1000000000 + timer_now.tv_nsec -
 			        timer_last_refresh.tv_nsec >=
-			    1000000 * prefix_change_interval) {
+			    1000000 * args->refreshInterval) {
 				updateKeyPrefix(randomPrefix, args->prefixlen);
 				timer_last_refresh.tv_sec = timer_now.tv_sec;
 				timer_last_refresh.tv_nsec = timer_now.tv_nsec;
@@ -1701,7 +1701,8 @@ int init_args(mako_args_t* args) {
 	args->json_output_path[0] = '\0';
 	args->bg_materialize_files = false;
 	args->bg_file_path[0] = '\0';
-	args->prefixlen = DEFAULT_PREFIX_LENGTH;
+	args->prefixlen = KEYPREFIXLEN;
+	args->refreshInterval = DEFAULT_REFRESH_INTERVAL;
 	return 0;
 }
 
@@ -1876,6 +1877,8 @@ void usage() {
 	printf("%-24s %s\n",
 	       "    --bg_file_path=PATH",
 	       "Read blob granule files from the local filesystem at PATH and materialize the results.");
+	printf("%-24s %s\n", "    --prefixlen", "The prefix length.");
+	printf("%-24s %s\n", "    --refresh-interval", "The refresh interval.");
 }
 
 /* parse benchmark paramters */
@@ -1926,7 +1929,8 @@ int parse_args(int argc, char* argv[], mako_args_t* args) {
 			{ "disable_ryw", no_argument, NULL, ARG_DISABLE_RYW },
 			{ "json_report", optional_argument, NULL, ARG_JSON_REPORT },
 			{ "bg_file_path", required_argument, NULL, ARG_BG_FILE_PATH },
-			{ "key_prefix_length", required_argument, NULL, ARG_PREFIX_LENGTH },
+			{ "prefixlen", optional_argument, NULL, ARG_PREFIX_LENGTH },
+			{ "refresh_interval", optional_argument, NULL, ARG_REFRESH_INTERVAL },
 			{ NULL, 0, NULL, 0 }
 		};
 		idx = 0;
@@ -2113,6 +2117,9 @@ int parse_args(int argc, char* argv[], mako_args_t* args) {
 			break;
 		case ARG_PREFIX_LENGTH:
 			args->prefixlen = atoi(optarg);
+			break;
+		case ARG_REFRESH_INTERVAL:
+			args->refreshInterval = atoi(optarg);
 		}
 	}
 
@@ -2235,6 +2242,14 @@ int validate_args(mako_args_t* args) {
 			fprintf(stderr, "ERROR: --txntagging must be a non-negative integer\n");
 			return -1;
 		}
+	}
+	if (args->prefixlen < KEYPREFIXLEN) {
+		fprintf(stderr, "ERROR: --prefixlen must be more than 4\n");
+		return -1;
+	}
+	if (args->refreshInterval <= 0) {
+		fprintf(stderr, "ERROR: --refresh-interval must be positive\n");
+		return -1;
 	}
 	return 0;
 }

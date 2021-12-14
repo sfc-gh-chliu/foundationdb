@@ -81,11 +81,8 @@ void genkey(char* str, char* prefix, int prefixlen, int prefixpadding, int num, 
 }
 
 void updateKeyPrefix(char* prefix, int prefixlen) {
-	if (prefixlen < KEYPREFIXLEN) {
-		return;
-	}
 	memcpy(prefix, KEYPREFIX, KEYPREFIXLEN);
-	randstr(prefix + KEYPREFIXLEN, prefixlen - KEYPREFIXLEN);
+	randnumstr(prefix + KEYPREFIXLEN, prefixlen - KEYPREFIXLEN);
 }
 
 /* This is another sorting algorithm used to calculate latency parameters */
