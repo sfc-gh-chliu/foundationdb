@@ -54,7 +54,7 @@ void genkey(char* str, char* prefix, int prefixlen, int prefixpadding, int num, 
 /*
  * Update the prefix with one random string
  */
-void updateKeyPrefix(char* str, int prefixlen, int prefixpadding, int len);
+void updateKeyPrefix(char* prefix, int prefixlen);
 
 #if 0
 // The main function is to sort arr[] of size n using Radix Sort

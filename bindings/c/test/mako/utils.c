@@ -80,16 +80,12 @@ void genkey(char* str, char* prefix, int prefixlen, int prefixpadding, int num, 
 	str[len - 1] = '\0';
 }
 
-void updateKeyPrefix(char* str,int prefixlen, int prefixpadding, int len){
-	//Acquire a random prefix
-	const int prefixoffset = prefixpadding ? len - prefixlen - 1 : 0;
-	char* prefixstr = (char*)malloc(sizeof(char)*prefixlen+1);
-	randstr(prefixstr,prefixlen+1);
-
-	memset(str, 'x', len);
-	memcpy(str + prefixoffset, prefixstr, prefixlen );
-	str[len - 1] = '\0';
-	free(prefixstr);
+void updateKeyPrefix(char* prefix, int prefixlen) {
+	if (prefixlen < KEYPREFIXLEN) {
+		return;
+	}
+	memcpy(prefix, KEYPREFIX, KEYPREFIXLEN);
+	randstr(prefix + KEYPREFIXLEN, prefixlen - KEYPREFIXLEN);
 }
 
 /* This is another sorting algorithm used to calculate latency parameters */

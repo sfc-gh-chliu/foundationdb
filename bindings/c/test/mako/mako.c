@@ -710,15 +710,17 @@ int run_op_read_blob_granules(FDBTransaction* transaction,
 }
 
 /* run one transaction */
-int run_one_transaction(FDBTransaction* transaction,
-                        mako_args_t* args,
-                        mako_stats_t* stats,
-                        char* keystr,
-                        char* keystr2,
-                        char* valstr,
-                        lat_block_t* block[],
-                        int* elem_size,
-                        bool* is_memory_allocated) {
+int run_one_transaction_with_prefix(FDBTransaction* transaction,
+                                    mako_args_t* args,
+                                    mako_stats_t* stats,
+                                    char* keystr,
+                                    char* keystr2,
+                                    char* valstr,
+                                    lat_block_t* block[],
+                                    int* elem_size,
+                                    bool* is_memory_allocated,
+                                    char* prefix,
+                                    int prefixlen) {
 	int i;
 	int count;
 	int rc;
@@ -753,7 +755,7 @@ retryTxn:
 				} else {
 					keynum = urand(0, args->rows - 1);
 				}
-				genkey(keystr, KEYPREFIX, KEYPREFIXLEN, args->prefixpadding, keynum, args->rows, args->key_length + 1);
+				genkey(keystr, prefix, prefixlen, args->prefixpadding, keynum, args->rows, args->key_length + 1);
 
 				/* range */
 				if (args->txnspec.ops[i][OP_RANGE] > 0) {
@@ -761,13 +763,7 @@ retryTxn:
 					if (keyend > args->rows - 1) {
 						keyend = args->rows - 1;
 					}
-					genkey(keystr2,
-					       KEYPREFIX,
-					       KEYPREFIXLEN,
-					       args->prefixpadding,
-					       keyend,
-					       args->rows,
-					       args->key_length + 1);
+					genkey(keystr2, prefix, prefixlen, args->prefixpadding, keyend, args->rows, args->key_length + 1);
 				}
 
 				if (stats->xacts % args->sampling == 0) {
@@ -1035,6 +1031,29 @@ retryTxn:
 	return 0;
 }
 
+/* run one transaction */
+int run_one_transaction(FDBTransaction* transaction,
+                        mako_args_t* args,
+                        mako_stats_t* stats,
+                        char* keystr,
+                        char* keystr2,
+                        char* valstr,
+                        lat_block_t* block[],
+                        int* elem_size,
+                        bool* is_memory_allocated) {
+	return run_one_transaction_with_prefix(transaction,
+	                                       args,
+	                                       stats,
+	                                       keystr,
+	                                       keystr2,
+	                                       valstr,
+	                                       block,
+	                                       elem_size,
+	                                       is_memory_allocated,
+	                                       KEYPREFIX,
+	                                       KEYPREFIXLEN);
+}
+
 int run_workload(FDBTransaction* transaction,
                  mako_args_t* args,
                  int thread_tps,
@@ -1092,7 +1111,8 @@ int run_workload(FDBTransaction* transaction,
 	clock_gettime(CLOCK_MONOTONIC_COARSE, &timer_prev);
 
 	// Used to refresh the random part in the keystr
-	int prefix_change_interval = 10; //ms
+	char* randomPrefix = (char*)malloc(sizeof(char) * args->prefixlen + 1);
+	int prefix_change_interval = 10; // ms
 	struct timespec timer_last_refresh;
 	clock_gettime(CLOCK_MONOTONIC_COARSE, &timer_last_refresh);
 
@@ -1104,9 +1124,10 @@ int run_workload(FDBTransaction* transaction,
 			clock_gettime(CLOCK_MONOTONIC_COARSE, &timer_now);
 
 			// Every 10 milliseconds
-			if((timer_now.tv_sec == timer_last_refresh.tv_sec && timer_now.tv_nsec-timer_last_refresh.tv_nsec>=1000000*prefix_change_interval) ||
-			(timer_now.tv_sec-timer_last_refresh.tv_sec)*1000000000+timer_now.tv_nsec-timer_last_refresh.tv_nsec>=1000000*prefix_change_interval){
-				updateKeyPrefix(keystr,KEYPREFIXLEN,args->prefixpadding,args->key_length + 1);
+			if ((timer_now.tv_sec - timer_last_refresh.tv_sec) * 1000000000 + timer_now.tv_nsec -
+			        timer_last_refresh.tv_nsec >=
+			    1000000 * prefix_change_interval) {
+				updateKeyPrefix(randomPrefix, args->prefixlen);
 				timer_last_refresh.tv_sec = timer_now.tv_sec;
 				timer_last_refresh.tv_nsec = timer_now.tv_nsec;
 			}
@@ -1165,8 +1186,17 @@ int run_workload(FDBTransaction* transaction,
 			}
 		}
 
-		rc = run_one_transaction(
-		    transaction, args, stats, keystr, keystr2, valstr, block, elem_size, is_memory_allocated);
+		rc = run_one_transaction_with_prefix(transaction,
+		                                     args,
+		                                     stats,
+		                                     keystr,
+		                                     keystr2,
+		                                     valstr,
+		                                     block,
+		                                     elem_size,
+		                                     is_memory_allocated,
+		                                     randomPrefix,
+		                                     args->prefixlen);
 		if (rc) {
 			/* FIXME: run_one_transaction should return something meaningful */
 			fprintf(annoyme, "ERROR: run_one_transaction failed (%d)\n", rc);
@@ -1184,6 +1214,7 @@ int run_workload(FDBTransaction* transaction,
 		xacts++;
 		total_xacts++;
 	}
+	free(randomPrefix);
 	free(keystr);
 	free(keystr2);
 	free(valstr);
@@ -1670,6 +1701,7 @@ int init_args(mako_args_t* args) {
 	args->json_output_path[0] = '\0';
 	args->bg_materialize_files = false;
 	args->bg_file_path[0] = '\0';
+	args->prefixlen = DEFAULT_PREFIX_LENGTH;
 	return 0;
 }
 
@@ -1894,6 +1926,7 @@ int parse_args(int argc, char* argv[], mako_args_t* args) {
 			{ "disable_ryw", no_argument, NULL, ARG_DISABLE_RYW },
 			{ "json_report", optional_argument, NULL, ARG_JSON_REPORT },
 			{ "bg_file_path", required_argument, NULL, ARG_BG_FILE_PATH },
+			{ "key_prefix_length", required_argument, NULL, ARG_PREFIX_LENGTH },
 			{ NULL, 0, NULL, 0 }
 		};
 		idx = 0;
@@ -2077,6 +2110,9 @@ int parse_args(int argc, char* argv[], mako_args_t* args) {
 		case ARG_BG_FILE_PATH:
 			args->bg_materialize_files = true;
 			strncpy(args->bg_file_path, optarg, strlen(optarg) + 1);
+			break;
+		case ARG_PREFIX_LENGTH:
+			args->prefixlen = atoi(optarg);
 		}
 	}
 
