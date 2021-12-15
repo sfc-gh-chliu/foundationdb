@@ -1101,7 +1101,12 @@ int run_workload(FDBTransaction* transaction,
 		free(keystr);
 		return -1;
 	}
-	valstr = (char*)malloc(sizeof(char) * args->value_length + 1);
+	int value_length = args->value_length;
+	if (random() % 100 < 20) {
+		// Randomize the value length by 2 - 10 times
+		value_length *= (random() % 9 + 2);
+	}
+	valstr = (char*)malloc(sizeof(char) * value_length + 1);
 	if (!valstr) {
 		free(keystr);
 		free(keystr2);
@@ -1126,7 +1131,7 @@ int run_workload(FDBTransaction* transaction,
 			// Every 10 milliseconds
 			if ((timer_now.tv_sec - timer_last_refresh.tv_sec) * 1000000000 + timer_now.tv_nsec -
 			        timer_last_refresh.tv_nsec >=
-			    1000000 * args->refreshInterval) {
+			    1000000 * args->refresh_interval) {
 				updateKeyPrefix(randomPrefix, args->prefixlen);
 				timer_last_refresh.tv_sec = timer_now.tv_sec;
 				timer_last_refresh.tv_nsec = timer_now.tv_nsec;
@@ -1702,7 +1707,8 @@ int init_args(mako_args_t* args) {
 	args->bg_materialize_files = false;
 	args->bg_file_path[0] = '\0';
 	args->prefixlen = KEYPREFIXLEN;
-	args->refreshInterval = DEFAULT_REFRESH_INTERVAL;
+	args->refresh_interval = DEFAULT_REFRESH_INTERVAL;
+	args->variable_commit_size = 0;
 	return 0;
 }
 
@@ -1878,7 +1884,8 @@ void usage() {
 	       "    --bg_file_path=PATH",
 	       "Read blob granule files from the local filesystem at PATH and materialize the results.");
 	printf("%-24s %s\n", "    --prefixlen", "The prefix length.");
-	printf("%-24s %s\n", "    --refresh-interval", "The refresh interval.");
+	printf("%-24s %s\n", "    --refresh_interval", "The refresh interval.");
+	printf("%-24s %s\n", "    --variable_commit_size", "Whether to assign the commit size randomly.");
 }
 
 /* parse benchmark paramters */
@@ -1931,6 +1938,7 @@ int parse_args(int argc, char* argv[], mako_args_t* args) {
 			{ "bg_file_path", required_argument, NULL, ARG_BG_FILE_PATH },
 			{ "prefixlen", optional_argument, NULL, ARG_PREFIX_LENGTH },
 			{ "refresh_interval", optional_argument, NULL, ARG_REFRESH_INTERVAL },
+			{ "variable_commit_size", no_argument, NULL, ARG_VARIABLE_COMMIT_SIZE },
 			{ NULL, 0, NULL, 0 }
 		};
 		idx = 0;
@@ -2119,7 +2127,10 @@ int parse_args(int argc, char* argv[], mako_args_t* args) {
 			args->prefixlen = atoi(optarg);
 			break;
 		case ARG_REFRESH_INTERVAL:
-			args->refreshInterval = atoi(optarg);
+			args->refresh_interval = atoi(optarg);
+			break;
+		case ARG_VARIABLE_COMMIT_SIZE:
+			args->variable_commit_size = 1;
 		}
 	}
 
@@ -2247,8 +2258,8 @@ int validate_args(mako_args_t* args) {
 		fprintf(stderr, "ERROR: --prefixlen must be more than 4\n");
 		return -1;
 	}
-	if (args->refreshInterval <= 0) {
-		fprintf(stderr, "ERROR: --refresh-interval must be positive\n");
+	if (args->refresh_interval <= 0) {
+		fprintf(stderr, "ERROR: --refresh_interval must be positive\n");
 		return -1;
 	}
 	return 0;
