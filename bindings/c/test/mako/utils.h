@@ -3,6 +3,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <time.h>
 
 /* uniform-distribution random */
 /* return a uniform random number between low and high, both inclusive */
@@ -54,7 +55,9 @@ void genkey(char* str, char* prefix, int prefixlen, int prefixpadding, int num, 
 /*
  * Update the prefix with one random string
  */
-void updateKeyPrefix(char* prefix, int prefixlen);
+void update_key_prefix(char* prefix, int prefixlen, int pos);
+
+void update_key_prefix_with_timestamp(char* prefix, int prefixlen, struct timespec* cur_time);
 
 #if 0
 // The main function is to sort arr[] of size n using Radix Sort

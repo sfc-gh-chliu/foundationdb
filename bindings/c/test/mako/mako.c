@@ -1116,8 +1116,8 @@ int run_workload(FDBTransaction* transaction,
 	clock_gettime(CLOCK_MONOTONIC_COARSE, &timer_prev);
 
 	// Used to refresh the random part in the keystr
-	char* randomPrefix = (char*)malloc(sizeof(char) * args->prefixlen + 1);
-	memcpy(randomPrefix, KEYPREFIX, KEYPREFIXLEN);
+	char* prefix = (char*)malloc(sizeof(char) * args->prefixlen + 1);
+	memcpy(prefix, KEYPREFIX, KEYPREFIXLEN);
 	struct timespec timer_last_refresh;
 	clock_gettime(CLOCK_MONOTONIC_COARSE, &timer_last_refresh);
 
@@ -1132,7 +1132,7 @@ int run_workload(FDBTransaction* transaction,
 			if ((timer_now.tv_sec - timer_last_refresh.tv_sec) * 1000000000 + timer_now.tv_nsec -
 			        timer_last_refresh.tv_nsec >=
 			    1000000 * args->refresh_interval) {
-				updateKeyPrefix(randomPrefix, args->prefixlen);
+				update_key_prefix_with_timestamp(prefix, args->prefixlen, &timer_now);
 				timer_last_refresh.tv_sec = timer_now.tv_sec;
 				timer_last_refresh.tv_nsec = timer_now.tv_nsec;
 			}
@@ -1200,7 +1200,7 @@ int run_workload(FDBTransaction* transaction,
 		                                     block,
 		                                     elem_size,
 		                                     is_memory_allocated,
-		                                     randomPrefix,
+		                                     prefix,
 		                                     args->prefixlen);
 		if (rc) {
 			/* FIXME: run_one_transaction should return something meaningful */
@@ -1219,7 +1219,7 @@ int run_workload(FDBTransaction* transaction,
 		xacts++;
 		total_xacts++;
 	}
-	free(randomPrefix);
+	free(prefix);
 	free(keystr);
 	free(keystr2);
 	free(valstr);

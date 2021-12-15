@@ -80,9 +80,25 @@ void genkey(char* str, char* prefix, int prefixlen, int prefixpadding, int num, 
 	str[len - 1] = '\0';
 }
 
-void updateKeyPrefix(char* prefix, int prefixlen) {
+void update_key_prefix(char* prefix, int prefixlen, int pos) {
 	memcpy(prefix, KEYPREFIX, KEYPREFIXLEN);
-	randnumstr(prefix + KEYPREFIXLEN, prefixlen - KEYPREFIXLEN);
+	if (pos < prefixlen) {
+		randnumstr(prefix + pos, prefixlen - pos);
+	}
+}
+
+void update_key_prefix_with_timestamp(char* prefix, int prefixlen, struct timespec* cur_time) {
+	long mask = 1;
+	while (mask <= cur_time->tv_nsec) {
+		mask *= 10;
+	}
+	mask /= 10;
+	int i;
+	for (i = KEYPREFIXLEN; i < prefixlen && mask; ++i) {
+		*(prefix + i) = cur_time->tv_nsec / mask % 10 + '0';
+		mask /= 10;
+	}
+	update_key_prefix(prefix, prefixlen, i);
 }
 
 /* This is another sorting algorithm used to calculate latency parameters */
