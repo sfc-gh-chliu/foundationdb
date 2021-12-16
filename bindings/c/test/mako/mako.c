@@ -746,8 +746,8 @@ retryTxn:
 
 		if ((args->txnspec.ops[i][OP_COUNT] > 0) && (i != OP_TRANSACTION) && (i != OP_COMMIT)) {
 			int ops_count = args->txnspec.ops[i][OP_COUNT];
-			if (random() % 100 < 20) {
-				ops_count *= (random() % 9 + 2);
+			if (random() % 100 < args->variable_ops_prob) {
+				ops_count *= (random() % 10 + 1);
 			}
 			for (count = 0; count < ops_count; count++) {
 
@@ -1105,12 +1105,11 @@ int run_workload(FDBTransaction* transaction,
 		free(keystr);
 		return -1;
 	}
-	int value_length = args->value_length;
-	if (args->variable_commit_size && random() % 100 < 20) {
-		// Randomize the value length by 2 - 10 times
-		value_length *= (random() % 9 + 2);
+	if (args->variable_commit_size && random() % 100 < args->variable_ops_prob) {
+		// Randomize the value length by 1 - 10 times
+		args->value_length *= (random() % 10 + 1);
 	}
-	valstr = (char*)malloc(sizeof(char) * value_length + 1);
+	valstr = (char*)malloc(sizeof(char) * args->value_length + 1);
 	if (!valstr) {
 		free(keystr);
 		free(keystr2);
@@ -1713,6 +1712,7 @@ int init_args(mako_args_t* args) {
 	args->prefixlen = KEYPREFIXLEN;
 	args->refresh_interval = DEFAULT_REFRESH_INTERVAL;
 	args->variable_commit_size = 0;
+	args->variable_ops_prob = 20;
 	return 0;
 }
 
@@ -1890,6 +1890,7 @@ void usage() {
 	printf("%-24s %s\n", "    --prefixlen", "The prefix length.");
 	printf("%-24s %s\n", "    --refresh_interval", "The refresh interval.");
 	printf("%-24s %s\n", "    --variable_commit_size", "Whether to assign the commit size randomly.");
+	printf("%-24s %s\n", "    --variable_ops_prob", "The probability of increasing commit sizes.");
 }
 
 /* parse benchmark paramters */
@@ -1943,6 +1944,7 @@ int parse_args(int argc, char* argv[], mako_args_t* args) {
 			{ "prefixlen", optional_argument, NULL, ARG_PREFIX_LENGTH },
 			{ "refresh_interval", optional_argument, NULL, ARG_REFRESH_INTERVAL },
 			{ "variable_commit_size", no_argument, NULL, ARG_VARIABLE_COMMIT_SIZE },
+			{ "variable_ops_prob", optional_argument, NULL, ARG_VARIABLE_OPS_PROB },
 			{ NULL, 0, NULL, 0 }
 		};
 		idx = 0;
@@ -2135,6 +2137,9 @@ int parse_args(int argc, char* argv[], mako_args_t* args) {
 			break;
 		case ARG_VARIABLE_COMMIT_SIZE:
 			args->variable_commit_size = 1;
+			break;
+		case ARG_VARIABLE_OPS_PROB:
+			args->variable_ops_prob = atoi(optarg);
 		}
 	}
 
@@ -2264,6 +2269,10 @@ int validate_args(mako_args_t* args) {
 	}
 	if (args->refresh_interval <= 0) {
 		fprintf(stderr, "ERROR: --refresh_interval must be positive\n");
+		return -1;
+	}
+	if (args->variable_ops_prob < 0 || args->variable_ops_prob >= 100) {
+		fprintf(stderr, "ERROR: --variable_ops_prob should be between 0 - 99\n");
 		return -1;
 	}
 	return 0;

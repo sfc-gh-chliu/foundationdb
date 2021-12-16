@@ -88,7 +88,8 @@ enum Arguments {
 	ARG_BG_FILE_PATH, // if blob granule files are stored locally, mako will read and materialize them if this is set
 	ARG_PREFIX_LENGTH,
 	ARG_REFRESH_INTERVAL,
-	ARG_VARIABLE_COMMIT_SIZE
+	ARG_VARIABLE_COMMIT_SIZE,
+	ARG_VARIABLE_OPS_PROB
 };
 
 enum TPSChangeTypes { TPS_SIN, TPS_SQUARE, TPS_PULSE };
@@ -158,6 +159,7 @@ typedef struct {
 	int prefixlen; // The length of prefix inside keys
 	int refresh_interval; // In millisecond
 	int variable_commit_size; // if 1, randomize the commit size in range 100% to 500%
+	int variable_ops_prob;
 } mako_args_t;
 
 /* shared memory */
