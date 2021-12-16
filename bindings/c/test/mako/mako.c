@@ -745,7 +745,11 @@ retryTxn:
 	for (i = 0; i < MAX_OP; i++) {
 
 		if ((args->txnspec.ops[i][OP_COUNT] > 0) && (i != OP_TRANSACTION) && (i != OP_COMMIT)) {
-			for (count = 0; count < args->txnspec.ops[i][OP_COUNT]; count++) {
+			int ops_count = args->txnspec.ops[i][OP_COUNT];
+			if (random() % 100 < 20) {
+				ops_count *= (random() % 9 + 2);
+			}
+			for (count = 0; count < ops_count; count++) {
 
 				/* note: for simplicity, always generate a new key(s) even when retrying */
 
@@ -1102,7 +1106,7 @@ int run_workload(FDBTransaction* transaction,
 		return -1;
 	}
 	int value_length = args->value_length;
-	if (random() % 100 < 20) {
+	if (args->variable_commit_size && random() % 100 < 20) {
 		// Randomize the value length by 2 - 10 times
 		value_length *= (random() % 9 + 2);
 	}

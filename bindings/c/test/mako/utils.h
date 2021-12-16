@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 #include <time.h>
+#include <limits.h>
 
 /* uniform-distribution random */
 /* return a uniform random number between low and high, both inclusive */

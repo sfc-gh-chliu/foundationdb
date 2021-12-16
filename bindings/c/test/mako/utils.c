@@ -57,6 +57,16 @@ int compute_thread_portion(int val, int p_idx, int t_idx, int total_p, int total
 	return interval;
 }
 
+/* number of long digits */
+int digits_long(long num) {
+	int digits = 0;
+	while (num > 0) {
+		num /= 10;
+		digits++;
+	}
+	return digits;
+}
+
 /* number of digits */
 int digits(int num) {
 	int digits = 0;
@@ -88,11 +98,7 @@ void update_key_prefix(char* prefix, int prefixlen, int pos) {
 }
 
 void update_key_prefix_with_timestamp(char* prefix, int prefixlen, struct timespec* cur_time) {
-	long mask = 1;
-	while (mask <= cur_time->tv_nsec) {
-		mask *= 10;
-	}
-	mask /= 10;
+	long mask = pow(10, digits_long(LONG_MAX)-1);
 	int i;
 	for (i = KEYPREFIXLEN; i < prefixlen && mask; ++i) {
 		*(prefix + i) = cur_time->tv_nsec / mask % 10 + '0';
