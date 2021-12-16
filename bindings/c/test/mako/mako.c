@@ -710,15 +710,17 @@ int run_op_read_blob_granules(FDBTransaction* transaction,
 }
 
 /* run one transaction */
-int run_one_transaction(FDBTransaction* transaction,
-                        mako_args_t* args,
-                        mako_stats_t* stats,
-                        char* keystr,
-                        char* keystr2,
-                        char* valstr,
-                        lat_block_t* block[],
-                        int* elem_size,
-                        bool* is_memory_allocated) {
+int run_one_transaction_with_prefix(FDBTransaction* transaction,
+                                    mako_args_t* args,
+                                    mako_stats_t* stats,
+                                    char* keystr,
+                                    char* keystr2,
+                                    char* valstr,
+                                    lat_block_t* block[],
+                                    int* elem_size,
+                                    bool* is_memory_allocated,
+                                    char* prefix,
+                                    int prefixlen) {
 	int i;
 	int count;
 	int rc;
@@ -743,7 +745,11 @@ retryTxn:
 	for (i = 0; i < MAX_OP; i++) {
 
 		if ((args->txnspec.ops[i][OP_COUNT] > 0) && (i != OP_TRANSACTION) && (i != OP_COMMIT)) {
-			for (count = 0; count < args->txnspec.ops[i][OP_COUNT]; count++) {
+			int ops_count = args->txnspec.ops[i][OP_COUNT];
+			if (random() % 100 < args->variable_ops_prob) {
+				ops_count *= (random() % 10 + 1);
+			}
+			for (count = 0; count < ops_count; count++) {
 
 				/* note: for simplicity, always generate a new key(s) even when retrying */
 
@@ -753,7 +759,7 @@ retryTxn:
 				} else {
 					keynum = urand(0, args->rows - 1);
 				}
-				genkey(keystr, KEYPREFIX, KEYPREFIXLEN, args->prefixpadding, keynum, args->rows, args->key_length + 1);
+				genkey(keystr, prefix, prefixlen, args->prefixpadding, keynum, args->rows, args->key_length + 1);
 
 				/* range */
 				if (args->txnspec.ops[i][OP_RANGE] > 0) {
@@ -761,13 +767,7 @@ retryTxn:
 					if (keyend > args->rows - 1) {
 						keyend = args->rows - 1;
 					}
-					genkey(keystr2,
-					       KEYPREFIX,
-					       KEYPREFIXLEN,
-					       args->prefixpadding,
-					       keyend,
-					       args->rows,
-					       args->key_length + 1);
+					genkey(keystr2, prefix, prefixlen, args->prefixpadding, keyend, args->rows, args->key_length + 1);
 				}
 
 				if (stats->xacts % args->sampling == 0) {
@@ -1035,6 +1035,29 @@ retryTxn:
 	return 0;
 }
 
+/* run one transaction */
+int run_one_transaction(FDBTransaction* transaction,
+                        mako_args_t* args,
+                        mako_stats_t* stats,
+                        char* keystr,
+                        char* keystr2,
+                        char* valstr,
+                        lat_block_t* block[],
+                        int* elem_size,
+                        bool* is_memory_allocated) {
+	return run_one_transaction_with_prefix(transaction,
+	                                       args,
+	                                       stats,
+	                                       keystr,
+	                                       keystr2,
+	                                       valstr,
+	                                       block,
+	                                       elem_size,
+	                                       is_memory_allocated,
+	                                       KEYPREFIX,
+	                                       KEYPREFIXLEN);
+}
+
 int run_workload(FDBTransaction* transaction,
                  mako_args_t* args,
                  int thread_tps,
@@ -1082,6 +1105,10 @@ int run_workload(FDBTransaction* transaction,
 		free(keystr);
 		return -1;
 	}
+	if (args->variable_commit_size && random() % 100 < args->variable_ops_prob) {
+		// Randomize the value length by 1 - 10 times
+		args->value_length *= (random() % 10 + 1);
+	}
 	valstr = (char*)malloc(sizeof(char) * args->value_length + 1);
 	if (!valstr) {
 		free(keystr);
@@ -1091,12 +1118,28 @@ int run_workload(FDBTransaction* transaction,
 
 	clock_gettime(CLOCK_MONOTONIC_COARSE, &timer_prev);
 
+	// Used to refresh the random part in the keystr
+	char* prefix = (char*)malloc(sizeof(char) * args->prefixlen + 1);
+	memcpy(prefix, KEYPREFIX, KEYPREFIXLEN);
+	struct timespec timer_last_refresh;
+	clock_gettime(CLOCK_MONOTONIC_COARSE, &timer_last_refresh);
+
 	/* main transaction loop */
 	while (1) {
 
 		if (((thread_tps > 0) && (xacts >= current_tps)) /* throttle on */ || dotrace /* transaction tracing on */) {
 
 			clock_gettime(CLOCK_MONOTONIC_COARSE, &timer_now);
+
+			// Every 10 milliseconds
+			if ((timer_now.tv_sec - timer_last_refresh.tv_sec) * 1000000000 + timer_now.tv_nsec -
+			        timer_last_refresh.tv_nsec >=
+			    1000000 * args->refresh_interval) {
+				update_key_prefix_with_timestamp(prefix, args->prefixlen, &timer_now);
+				timer_last_refresh.tv_sec = timer_now.tv_sec;
+				timer_last_refresh.tv_nsec = timer_now.tv_nsec;
+			}
+
 			if ((timer_now.tv_sec > timer_prev.tv_sec + 1) ||
 			    ((timer_now.tv_sec == timer_prev.tv_sec + 1) && (timer_now.tv_nsec > timer_prev.tv_nsec))) {
 				/* more than 1 second passed, no need to throttle */
@@ -1151,8 +1194,17 @@ int run_workload(FDBTransaction* transaction,
 			}
 		}
 
-		rc = run_one_transaction(
-		    transaction, args, stats, keystr, keystr2, valstr, block, elem_size, is_memory_allocated);
+		rc = run_one_transaction_with_prefix(transaction,
+		                                     args,
+		                                     stats,
+		                                     keystr,
+		                                     keystr2,
+		                                     valstr,
+		                                     block,
+		                                     elem_size,
+		                                     is_memory_allocated,
+		                                     prefix,
+		                                     args->prefixlen);
 		if (rc) {
 			/* FIXME: run_one_transaction should return something meaningful */
 			fprintf(annoyme, "ERROR: run_one_transaction failed (%d)\n", rc);
@@ -1170,6 +1222,7 @@ int run_workload(FDBTransaction* transaction,
 		xacts++;
 		total_xacts++;
 	}
+	free(prefix);
 	free(keystr);
 	free(keystr2);
 	free(valstr);
@@ -1656,6 +1709,10 @@ int init_args(mako_args_t* args) {
 	args->json_output_path[0] = '\0';
 	args->bg_materialize_files = false;
 	args->bg_file_path[0] = '\0';
+	args->prefixlen = KEYPREFIXLEN;
+	args->refresh_interval = DEFAULT_REFRESH_INTERVAL;
+	args->variable_commit_size = 0;
+	args->variable_ops_prob = 20;
 	return 0;
 }
 
@@ -1830,6 +1887,10 @@ void usage() {
 	printf("%-24s %s\n",
 	       "    --bg_file_path=PATH",
 	       "Read blob granule files from the local filesystem at PATH and materialize the results.");
+	printf("%-24s %s\n", "    --prefixlen", "The prefix length.");
+	printf("%-24s %s\n", "    --refresh_interval", "The refresh interval.");
+	printf("%-24s %s\n", "    --variable_commit_size", "Whether to assign the commit size randomly.");
+	printf("%-24s %s\n", "    --variable_ops_prob", "The probability of increasing commit sizes.");
 }
 
 /* parse benchmark paramters */
@@ -1880,6 +1941,10 @@ int parse_args(int argc, char* argv[], mako_args_t* args) {
 			{ "disable_ryw", no_argument, NULL, ARG_DISABLE_RYW },
 			{ "json_report", optional_argument, NULL, ARG_JSON_REPORT },
 			{ "bg_file_path", required_argument, NULL, ARG_BG_FILE_PATH },
+			{ "prefixlen", optional_argument, NULL, ARG_PREFIX_LENGTH },
+			{ "refresh_interval", optional_argument, NULL, ARG_REFRESH_INTERVAL },
+			{ "variable_commit_size", no_argument, NULL, ARG_VARIABLE_COMMIT_SIZE },
+			{ "variable_ops_prob", optional_argument, NULL, ARG_VARIABLE_OPS_PROB },
 			{ NULL, 0, NULL, 0 }
 		};
 		idx = 0;
@@ -2063,6 +2128,18 @@ int parse_args(int argc, char* argv[], mako_args_t* args) {
 		case ARG_BG_FILE_PATH:
 			args->bg_materialize_files = true;
 			strncpy(args->bg_file_path, optarg, strlen(optarg) + 1);
+			break;
+		case ARG_PREFIX_LENGTH:
+			args->prefixlen = atoi(optarg);
+			break;
+		case ARG_REFRESH_INTERVAL:
+			args->refresh_interval = atoi(optarg);
+			break;
+		case ARG_VARIABLE_COMMIT_SIZE:
+			args->variable_commit_size = 1;
+			break;
+		case ARG_VARIABLE_OPS_PROB:
+			args->variable_ops_prob = atoi(optarg);
 		}
 	}
 
@@ -2185,6 +2262,18 @@ int validate_args(mako_args_t* args) {
 			fprintf(stderr, "ERROR: --txntagging must be a non-negative integer\n");
 			return -1;
 		}
+	}
+	if (args->prefixlen < KEYPREFIXLEN) {
+		fprintf(stderr, "ERROR: --prefixlen must be more than 4\n");
+		return -1;
+	}
+	if (args->refresh_interval <= 0) {
+		fprintf(stderr, "ERROR: --refresh_interval must be positive\n");
+		return -1;
+	}
+	if (args->variable_ops_prob < 0 || args->variable_ops_prob >= 100) {
+		fprintf(stderr, "ERROR: --variable_ops_prob should be between 0 - 99\n");
+		return -1;
 	}
 	return 0;
 }

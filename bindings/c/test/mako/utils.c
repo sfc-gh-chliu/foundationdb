@@ -57,6 +57,16 @@ int compute_thread_portion(int val, int p_idx, int t_idx, int total_p, int total
 	return interval;
 }
 
+/* number of long digits */
+int digits_long(long num) {
+	int digits = 0;
+	while (num > 0) {
+		num /= 10;
+		digits++;
+	}
+	return digits;
+}
+
 /* number of digits */
 int digits(int num) {
 	int digits = 0;
@@ -78,6 +88,23 @@ void genkey(char* str, char* prefix, int prefixlen, int prefixpadding, int num, 
 	memset(str, 'x', len);
 	memcpy(str + prefixoffset, prefixstr, prefixlen + rowdigit);
 	str[len - 1] = '\0';
+}
+
+void update_key_prefix(char* prefix, int prefixlen, int pos) {
+	memcpy(prefix, KEYPREFIX, KEYPREFIXLEN);
+	if (pos < prefixlen) {
+		randnumstr(prefix + pos, prefixlen - pos);
+	}
+}
+
+void update_key_prefix_with_timestamp(char* prefix, int prefixlen, struct timespec* cur_time) {
+	long mask = pow(10, digits_long(LONG_MAX)-1);
+	int i;
+	for (i = KEYPREFIXLEN; i < prefixlen && mask; ++i) {
+		*(prefix + i) = cur_time->tv_nsec / mask % 10 + '0';
+		mask /= 10;
+	}
+	update_key_prefix(prefix, prefixlen, i);
 }
 
 /* This is another sorting algorithm used to calculate latency parameters */

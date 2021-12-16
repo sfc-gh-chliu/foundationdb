@@ -85,7 +85,11 @@ enum Arguments {
 	ARG_DISABLE_RYW,
 	ARG_CLIENT_THREADS_PER_VERSION,
 	ARG_JSON_REPORT,
-	ARG_BG_FILE_PATH // if blob granule files are stored locally, mako will read and materialize them if this is set
+	ARG_BG_FILE_PATH, // if blob granule files are stored locally, mako will read and materialize them if this is set
+	ARG_PREFIX_LENGTH,
+	ARG_REFRESH_INTERVAL,
+	ARG_VARIABLE_COMMIT_SIZE,
+	ARG_VARIABLE_OPS_PROB
 };
 
 enum TPSChangeTypes { TPS_SIN, TPS_SQUARE, TPS_PULSE };
@@ -110,6 +114,7 @@ typedef struct {
 #define NUM_CLUSTERS_MAX 3
 #define NUM_DATABASES_MAX 10
 #define MAX_BG_IDS 1000
+#define DEFAULT_REFRESH_INTERVAL 10
 
 /* benchmark parameters */
 typedef struct {
@@ -151,6 +156,10 @@ typedef struct {
 	char json_output_path[PATH_MAX];
 	bool bg_materialize_files;
 	char bg_file_path[PATH_MAX];
+	int prefixlen; // The length of prefix inside keys
+	int refresh_interval; // In millisecond
+	int variable_commit_size; // if 1, randomize the commit size in range 100% to 500%
+	int variable_ops_prob;
 } mako_args_t;
 
 /* shared memory */
